@@ -1,35 +1,38 @@
+"""
+Configuration file for the HeteroFM experiment.
+All tunable parameters are centralized here.
+"""
+
 # =============================================================================
-# FEDERATED LEARNING & MODEL PARAMETERS
+# FEDERATED LEARNING PARAMETERS
 # =============================================================================
 
-CLIENT_SIZES = [32, 32, 48, 48, 64, 64, 96, 96, 128, 128]
+COMMUNICATION_ROUNDS = 10
+LOCAL_EPOCHS = 5
+
+# =============================================================================
+# MODEL PARAMETERS
+# =============================================================================
+
+CLIENT_SIZES = [6, 6, 8, 8, 12, 12, 16, 16, 32, 32] # [32, 32, 48, 48, 64, 64, 96, 96, 128, 128]
 NUM_CLIENTS = len(CLIENT_SIZES)
 MAX_HIDDEN_SIZE = max(CLIENT_SIZES)
 
 # =============================================================================
-# TRAINING PARAMETERS
+# DATA PARAMETERS
 # =============================================================================
 
-COMMUNICATION_ROUNDS = 100
-LOCAL_EPOCHS = 5
 BATCH_SIZE = 32
-LEARNING_RATE = 0.01
-
-# =============================================================================
-# DATA SPLIT PARAMETERS
-# =============================================================================
-
-# Data split mode. Can be 'iid' or 'non-iid'.
-DATA_SPLIT_MODE = 'iid'
+DATA_DIR = './data'
+DATA_SPLIT_MODE = 'iid' # Data split mode. 'iid' or 'non-iid'.
 
 # Number of classes assigned to each client in the non-iid setting.
 # For MNIST, there are 10 classes in total.
 NON_IID_N_CLASSES_PER_CLIENT = 2
 
-
 # =============================================================================
-# DATA & ENVIRONMENT PARAMETERS
+# TRAINING PARAMETERS
 # =============================================================================
 
-# Directory to store the MNIST dataset, inside the project folder.
-DATA_DIR = './data'
+# Learning rate for the SGD optimizer.
+LEARNING_RATE = 0.01
