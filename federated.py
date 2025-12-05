@@ -4,7 +4,7 @@ import torch.optim as optim
 import copy
 from model import init_model
 
-def client_update(client_loader, global_model_state, client_size, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, device):
+def client_update(client_loader, global_model_state, client_size, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device):
     # Create a local model with the client's specific size
     local_model = init_model(client_size, scaler_rate).to(device)
     local_model_state = local_model.state_dict()
@@ -18,7 +18,7 @@ def client_update(client_loader, global_model_state, client_size, scaler_rate, l
     
     # Standard training loop
     local_model.train()
-    optimizer = optim.SGD(local_model.parameters(), lr=learning_rate)
+    optimizer = optim.SGD(local_model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
     
     for _ in range(local_epochs):
@@ -28,9 +28,9 @@ def client_update(client_loader, global_model_state, client_size, scaler_rate, l
             output = local_model(data)
 
             if use_masked_loss and label_split is not None:
-                mask = torch.zeros_like(output)
-                mask[:, label_split] = 1
-                output = output * mask
+                mask = torch.full_like(output, -float('inf'))
+                mask[:, label_split] = 0.0
+                output = output + mask
 
             loss = criterion(output, target)
             loss.backward()

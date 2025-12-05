@@ -12,7 +12,7 @@ import federated
 import model
 
 def run_client_gpu(args):
-    client_id, gpu_index, global_state, client_loader, client_size, scaler_rate, label_split, use_masked_loss, learning_rate, grad_clip_norm = args
+    client_id, gpu_index, global_state, client_loader, client_size, scaler_rate, label_split, use_masked_loss, learning_rate, momentum, weight_decay, grad_clip_norm = args
     device = torch.device(f'cuda:{gpu_index}')
 
     try:
@@ -26,6 +26,8 @@ def run_client_gpu(args):
             local_epochs=config.LOCAL_EPOCHS,
             learning_rate=learning_rate,
             grad_clip_norm=grad_clip_norm,
+            momentum=momentum,
+            weight_decay=weight_decay,
             device=device
         )
         return client_state, client_size
@@ -74,7 +76,7 @@ def main():
     global_model = model.init_model(config.MAX_HIDDEN_SIZE).to(server_device)
 
     # Optimizer and LR Scheduler
-    optimizer = optim.SGD(global_model.parameters(), lr=config.LEARNING_RATE)
+    optimizer = optim.SGD(global_model.parameters(), lr=config.LEARNING_RATE, momentum=config.MOMENTUM, weight_decay=config.WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.MultiStepLR(
         optimizer, 
         milestones=config.LR_DECAY_MILESTONES, 
@@ -142,6 +144,8 @@ def main():
                     label_split,
                     config.USE_MASKED_LOSS,
                     current_lr,
+                    config.MOMENTUM,
+                    config.WEIGHT_DECAY,
                     config.GRAD_CLIP_NORM
                 )
                 tasks.append(args)

@@ -14,7 +14,7 @@ LOCAL_EPOCHS = 5
 # MODEL PARAMETERS
 # =============================================================================
 
-CLIENT_SIZES = [6, 6, 8, 8, 12, 12, 16, 16, 32, 32] # [32, 32, 48, 48, 64, 64, 96, 96, 128, 128]
+CLIENT_SIZES = [32, 32, 48, 48, 64, 64, 96, 96, 128, 128] # [6, 6, 8, 8, 12, 12, 16, 16, 32, 32]
 NUM_CLIENTS = len(CLIENT_SIZES)
 MAX_HIDDEN_SIZE = max(CLIENT_SIZES)
 
@@ -40,6 +40,9 @@ LR_SCHEDULER = 'MultiStepLR'
 LR_DECAY_MILESTONES = [150, 250]
 LR_DECAY_GAMMA = 0.1
 GRAD_CLIP_NORM = 1.0
+
+MOMENTUM = 0.9
+WEIGHT_DECAY = 5e-4
 
 USE_MASKED_LOSS = True
 NUM_WORKERS = 0 # 변수 없애고 사용하는 부분도 옵션 그냥 없애기?
