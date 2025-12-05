@@ -36,6 +36,10 @@ NON_IID_N_CLASSES_PER_CLIENT = 2
 
 # Learning rate for the SGD optimizer.
 LEARNING_RATE = 0.01
+LR_SCHEDULER = 'MultiStepLR'
+LR_DECAY_MILESTONES = [150, 250]
+LR_DECAY_GAMMA = 0.1
+GRAD_CLIP_NORM = 1.0
 
 USE_MASKED_LOSS = True
-NUM_WORKERS = 4
+NUM_WORKERS = 0 # 변수 없애고 사용하는 부분도 옵션 그냥 없애기?

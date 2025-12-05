@@ -4,7 +4,7 @@ import torch.optim as optim
 import copy
 from model import init_model
 
-def client_update(client_loader, global_model_state, client_size, scaler_rate, label_split, use_masked_loss, local_epochs, learning_rate, device):
+def client_update(client_loader, global_model_state, client_size, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, device):
     # Create a local model with the client's specific size
     local_model = init_model(client_size, scaler_rate).to(device)
     local_model_state = local_model.state_dict()
@@ -34,6 +34,10 @@ def client_update(client_loader, global_model_state, client_size, scaler_rate, l
 
             loss = criterion(output, target)
             loss.backward()
+
+            if grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(local_model.parameters(), grad_clip_norm)
+            
             optimizer.step()
             
     return local_model.cpu().state_dict(), client_size

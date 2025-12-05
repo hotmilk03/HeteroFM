@@ -1,6 +1,10 @@
 import torch.nn as nn
 from modules import Scaler
 
+def init_param(m):
+    if isinstance(m, nn.Linear):
+        m.bias.data.zero_()
+
 class MLP(nn.Module):
     def __init__(self, hidden_size, scaler_rate=1.0):
         super(MLP, self).__init__()
@@ -16,4 +20,6 @@ class MLP(nn.Module):
         return self.layers(x)
 
 def init_model(hidden_size, scaler_rate=1.0):
-    return MLP(hidden_size, scaler_rate)
+    model = MLP(hidden_size, scaler_rate)
+    model.apply(init_param)
+    return model
