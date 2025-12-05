@@ -3,7 +3,9 @@ from modules import Scaler
 
 def init_param(m):
     if isinstance(m, nn.Linear):
-        m.bias.data.zero_()
+        nn.init.xavier_normal_(m.weight)
+        if m.bias is not None:
+            m.bias.data.zero_()
 
 class MLP(nn.Module):
     def __init__(self, hidden_size, scaler_rate=1.0):

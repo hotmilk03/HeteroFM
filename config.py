@@ -7,14 +7,14 @@ All tunable parameters are centralized here.
 # FEDERATED LEARNING PARAMETERS
 # =============================================================================
 
-COMMUNICATION_ROUNDS = 4
+COMMUNICATION_ROUNDS = 100
 LOCAL_EPOCHS = 5
 
 # =============================================================================
 # MODEL PARAMETERS
 # =============================================================================
 
-CLIENT_SIZES = [32, 32, 48, 48, 64, 64, 96, 96, 128, 128] # [6, 6, 8, 8, 12, 12, 16, 16, 32, 32]
+CLIENT_SIZES = [128, 128, 256, 256, 512, 512, 512, 1024, 1024, 1024]  # [32, 32, 48, 48, 64, 64, 96, 96, 128, 128]
 NUM_CLIENTS = len(CLIENT_SIZES)
 MAX_HIDDEN_SIZE = max(CLIENT_SIZES)
 
@@ -37,7 +37,7 @@ NON_IID_N_CLASSES_PER_CLIENT = 2
 # Learning rate for the SGD optimizer.
 LEARNING_RATE = 0.01
 LR_SCHEDULER = 'MultiStepLR'
-LR_DECAY_MILESTONES = [150, 250]
+LR_DECAY_MILESTONES = [50, 75]  # [150, 250]
 LR_DECAY_GAMMA = 0.1
 GRAD_CLIP_NORM = 1.0
 
