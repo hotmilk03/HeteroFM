@@ -7,7 +7,7 @@ All tunable parameters are centralized here.
 # FEDERATED LEARNING PARAMETERS
 # =============================================================================
 
-COMMUNICATION_ROUNDS = 10
+COMMUNICATION_ROUNDS = 4
 LOCAL_EPOCHS = 5
 
 # =============================================================================
@@ -24,7 +24,7 @@ MAX_HIDDEN_SIZE = max(CLIENT_SIZES)
 
 BATCH_SIZE = 32
 DATA_DIR = './data'
-DATA_SPLIT_MODE = 'iid' # Data split mode. 'iid' or 'non-iid'.
+DATA_SPLIT_MODE = 'non-iid' # Data split mode. 'iid' or 'non-iid'.
 
 # Number of classes assigned to each client in the non-iid setting.
 # For MNIST, there are 10 classes in total.
@@ -36,3 +36,6 @@ NON_IID_N_CLASSES_PER_CLIENT = 2
 
 # Learning rate for the SGD optimizer.
 LEARNING_RATE = 0.01
+
+USE_MASKED_LOSS = True
+NUM_WORKERS = 4

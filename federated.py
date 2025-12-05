@@ -4,20 +4,16 @@ import torch.optim as optim
 import copy
 from model import init_model
 
-def client_update(client_loader, global_model_state, client_size, local_epochs, learning_rate, device):
-    """
-    Creates a local model by slicing the global model, trains it on local data,
-    and returns the updated local model state and its size.
-    """
+def client_update(client_loader, global_model_state, client_size, scaler_rate, label_split, use_masked_loss, local_epochs, learning_rate, device):
     # Create a local model with the client's specific size
-    local_model = init_model(client_size).to(device)
+    local_model = init_model(client_size, scaler_rate).to(device)
     local_model_state = local_model.state_dict()
     
     # Slice the global model's state to fit the local model
     local_model_state['layers.1.weight'] = global_model_state['layers.1.weight'][:client_size, :].clone()
     local_model_state['layers.1.bias'] = global_model_state['layers.1.bias'][:client_size].clone()
-    local_model_state['layers.3.weight'] = global_model_state['layers.3.weight'][:, :client_size].clone()
-    local_model_state['layers.3.bias'] = global_model_state['layers.3.bias'].clone()
+    local_model_state['layers.4.weight'] = global_model_state['layers.4.weight'][:, :client_size].clone()
+    local_model_state['layers.4.bias'] = global_model_state['layers.4.bias'].clone()
     local_model.load_state_dict(local_model_state)
     
     # Standard training loop
@@ -30,6 +26,12 @@ def client_update(client_loader, global_model_state, client_size, local_epochs, 
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
             output = local_model(data)
+
+            if use_masked_loss and label_split is not None:
+                mask = torch.zeros_like(output)
+                mask[:, label_split] = 1
+                output = output * mask
+
             loss = criterion(output, target)
             loss.backward()
             optimizer.step()
@@ -55,10 +57,10 @@ def aggregate_heterofl(global_model_state, client_contributions):
         count_state['layers.1.weight'][:client_size, :] += 1
         count_state['layers.1.bias'][:client_size] += 1
         
-        agg_state['layers.3.weight'][:, :client_size] += client_state['layers.3.weight']
-        agg_state['layers.3.bias'] += client_state['layers.3.bias']
-        count_state['layers.3.weight'][:, :client_size] += 1
-        count_state['layers.3.bias'] += 1
+        agg_state['layers.4.weight'][:, :client_size] += client_state['layers.4.weight']
+        agg_state['layers.4.bias'] += client_state['layers.4.bias']
+        count_state['layers.4.weight'][:, :client_size] += 1
+        count_state['layers.4.bias'] += 1
 
     # Create the new global state by averaging
     new_global_state = copy.deepcopy(global_model_state)

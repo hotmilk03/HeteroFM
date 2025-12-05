@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import time
 import traceback
-import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 
 import config
@@ -10,7 +10,8 @@ import data
 import federated
 import model
 
-def run_client_gpu(client_id, gpu_index, global_state, client_loader, client_size):
+def run_client_gpu(args):
+    client_id, gpu_index, global_state, client_loader, client_size, scaler_rate, label_split, use_masked_loss = args
     device = torch.device(f'cuda:{gpu_index}')
 
     try:
@@ -18,6 +19,9 @@ def run_client_gpu(client_id, gpu_index, global_state, client_loader, client_siz
             client_loader=client_loader,
             global_model_state=global_state,
             client_size=client_size,
+            scaler_rate=scaler_rate,
+            label_split=label_split,
+            use_masked_loss=use_masked_loss,
             local_epochs=config.LOCAL_EPOCHS,
             learning_rate=config.LEARNING_RATE,
             device=device
@@ -69,7 +73,7 @@ def main():
     global_model = model.init_model(config.MAX_HIDDEN_SIZE).to(server_device)
 
     train_dataset, test_dataset = data.load_data(config.DATA_DIR)
-    client_loaders, test_loader = data.prepare_data(
+    client_loaders, test_loader, label_splits = data.prepare_data(
         train_dataset, 
         test_dataset, 
         config.NUM_CLIENTS, 
@@ -103,23 +107,29 @@ def main():
         print(f"Round {comm_round}: Training on {num_gpus} GPUs in parallel...")
 
         # parallel client updates using ThreadPoolExecutor
-        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = []
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            tasks = []
+            global_model_state_cpu = copy.deepcopy(global_model.state_dict())
             for i in range(config.NUM_CLIENTS):
                 gpu_index = i % num_gpus
+                scaler_rate = config.CLIENT_SIZES[i] / config.MAX_HIDDEN_SIZE
+                label_split = label_splits.get(i)
 
-                futures.append(
-                    executor.submit(
-                        run_client_gpu,
-                        client_id=i,
-                        gpu_index=gpu_index,
-                        global_state=global_model_state,
-                        client_loader=client_loaders[i],
-                        client_size=config.CLIENT_SIZES[i]
-                    )
+                args = (
+                    i,
+                    gpu_index,
+                    global_model_state_cpu,
+                    client_loaders[i],
+                    config.CLIENT_SIZES[i],
+                    scaler_rate,
+                    label_split,
+                    config.USE_MASKED_LOSS
                 )
+                tasks.append(args)
 
-            for future in concurrent.futures.as_completed(futures):
+            futures = [executor.submit(run_client_gpu, task) for task in tasks]
+
+            for future in as_completed(futures):
                 result = future.result()
                 if result is not None:
                     client_contributions.append(result)
