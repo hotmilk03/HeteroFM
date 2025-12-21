@@ -10,10 +10,15 @@ def client_update(client_loader, global_model_state, client_size, scaler_rate, l
     local_model_state = local_model.state_dict()
     
     # Slice the global model's state to fit the local model
-    local_model_state['layers.1.weight'] = global_model_state['layers.1.weight'][:client_size, :].clone()
-    local_model_state['layers.1.bias'] = global_model_state['layers.1.bias'][:client_size].clone()
-    local_model_state['layers.4.weight'] = global_model_state['layers.4.weight'][:, :client_size].clone()
-    local_model_state['layers.4.bias'] = global_model_state['layers.4.bias'].clone()
+    for key in local_model_state:
+        if key in global_model_state:
+            global_param = global_model_state[key]
+            local_shape = local_model_state[key].shape
+            
+            slices = [slice(0, dim) for dim in local_shape]
+            
+            local_model_state[key] = global_param[tuple(slices)].clone()
+    
     local_model.load_state_dict(local_model_state)
     
     # Standard training loop
@@ -56,15 +61,12 @@ def aggregate_heterofl(global_model_state, client_contributions):
         
     # Sum up all client model contributions to the appropriate slices
     for client_state, client_size in client_contributions:
-        agg_state['layers.1.weight'][:client_size, :] += client_state['layers.1.weight']
-        agg_state['layers.1.bias'][:client_size] += client_state['layers.1.bias']
-        count_state['layers.1.weight'][:client_size, :] += 1
-        count_state['layers.1.bias'][:client_size] += 1
-        
-        agg_state['layers.4.weight'][:, :client_size] += client_state['layers.4.weight']
-        agg_state['layers.4.bias'] += client_state['layers.4.bias']
-        count_state['layers.4.weight'][:, :client_size] += 1
-        count_state['layers.4.bias'] += 1
+        for key, client_param in client_state.items():
+            if key in agg_state:
+                slices = [slice(0, dim) for dim in client_param.shape]
+
+                agg_state[key][tuple(slices)] += client_param
+                count_state[key][tuple(slices)] += 1
 
     # Create the new global state by averaging
     new_global_state = copy.deepcopy(global_model_state)

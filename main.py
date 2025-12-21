@@ -163,8 +163,8 @@ def main():
         )
         global_model.load_state_dict(global_model_state)
         
-        optimizer.step() # nothing
-        scheduler.step()
+        optimizer.step() # nothing # erase?
+        scheduler.step() # erase?
 
         # Evaluate the global model
         eval_device = torch.device("cuda:0" if num_gpus > 0 else "cpu")

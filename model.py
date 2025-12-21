@@ -8,13 +8,24 @@ def init_param(m):
             m.bias.data.zero_()
 
 class MLP(nn.Module):
-    def __init__(self, hidden_size, scaler_rate=1.0):
+    def __init__(self, hidden_size, scaler_rate=1.0, track=False): # dropout_p=0.5
         super(MLP, self).__init__()
         self.layers = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(28*28, hidden_size),
+
+            nn.Linear(28*28, hidden_size, bias=False),
             Scaler(scaler_rate),
+            nn.BatchNorm1d(hidden_size, momentum=None, track_running_stats=track),
             nn.ReLU(inplace=True),
+            # nn.Dropout(dropout_p),
+
+            # # for 3-layer MLP
+            # nn.Linear(hidden_size, hidden_size, bias=False),
+            # Scaler(scaler_rate),
+            # nn.BatchNorm1d(hidden_size, momentum=None, track_running_stats=track),
+            # nn.ReLU(inplace=True),
+            # # nn.Dropout(dropout_p),
+            
             nn.Linear(hidden_size, 10),
         )
 

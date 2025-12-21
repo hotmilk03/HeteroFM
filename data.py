@@ -17,7 +17,7 @@ def load_data(data_dir):
     return train_dataset, test_dataset
 
 # prepare data for each client
-def prepare_data(train_dataset, test_dataset, num_clients, batch_size, data_split_mode, n_classes_per_client=2):
+def prepare_data(train_dataset, test_dataset, num_clients, batch_size, data_split_mode, n_classes_per_client):
     print(f"Preparing '{data_split_mode}' data split for {num_clients} clients...")
     
     client_loaders = []
@@ -34,7 +34,7 @@ def prepare_data(train_dataset, test_dataset, num_clients, batch_size, data_spli
             client_indices = indices[i * samples_per_client: (i + 1) * samples_per_client]
             label_splits[i] = np.unique(labels[client_indices]).tolist()
             client_subset = Subset(train_dataset, client_indices)
-            client_loaders.append(DataLoader(client_subset, batch_size=batch_size, shuffle=True, num_workers=config.NUM_WORKERS))
+            client_loaders.append(DataLoader(client_subset, batch_size=batch_size, shuffle=True, num_workers=config.NUM_WORKERS, drop_last=True)) # drop last for batch norm
             
     elif data_split_mode == 'non-iid':
         # Non-IID split logic
@@ -45,25 +45,39 @@ def prepare_data(train_dataset, test_dataset, num_clients, batch_size, data_spli
         if shards_per_class == 0:
             raise ValueError(f"Cannot create non-iid split. Not enough data for {n_classes_per_client} classes per client.")
 
-        shards = []
+        class_shards = {i: [] for i in range(num_classes)}
         for i in range(num_classes):
             np.random.shuffle(idx_by_class[i])
             split_points = np.array_split(idx_by_class[i], shards_per_class)
-            shards.extend([sp.tolist() for sp in split_points])
+            class_shards[i] = [sp.tolist() for sp in split_points]
         
-        np.random.shuffle(shards)
+        # np.random.shuffle(shards)
         
         client_indices_map = {i: [] for i in range(num_clients)}
-        label_splits = {} # {i: [] for i in range(num_clients)}
-        shards_per_client = len(shards) // num_clients
+        label_splits = {}
+        # shards_per_client = len(shards) // num_clients
         for i in range(num_clients):
-            assigned_shards = shards[i * shards_per_client : (i + 1) * shards_per_client]
-            client_indices = [idx for shard in assigned_shards for idx in shard]
+            # assigned_shards = shards[i * shards_per_client : (i + 1) * shards_per_client]
+            # client_indices = [idx for shard in assigned_shards for idx in shard]
+            
+            client_indices = []
+            
+            # compute target classes idx for this client
+            target_classes = [(i + j) % num_classes for j in range(n_classes_per_client)]
+            
+            # Get one shard for each target class
+            for cls in target_classes:
+                if len(class_shards[cls]) > 0:
+                    shard = class_shards[cls].pop(0) # 0번째 조각을 꺼내고 리스트에서 제거
+                    client_indices.extend(shard)
+                else:
+                    raise IndexError(f"Error: Class {cls} is out of data shards!")
+                    
             client_indices_map[i] = client_indices
             label_splits[i] = np.unique(labels[client_indices]).tolist()
 
             client_subset = Subset(train_dataset, client_indices_map[i])
-            client_loaders.append(DataLoader(client_subset, batch_size=batch_size, shuffle=True, num_workers=config.NUM_WORKERS))
+            client_loaders.append(DataLoader(client_subset, batch_size=batch_size, shuffle=True, num_workers=config.NUM_WORKERS, drop_last=True)) # drop last for batch norm
     else:
         raise ValueError("Invalid data_split_mode in config.py. Choose 'iid' or 'non-iid'.")
 
