@@ -73,7 +73,15 @@ def main():
     print(f"Number of available GPUs: {num_gpus}\n")
 
     server_device = torch.device("cpu")
-    global_model = model.init_model(config.MAX_HIDDEN_SIZE).to(server_device)
+    if config.REARRANGE:
+        if config.MATCH == 'C':
+            global_model = model.init_model(config.MIN_HIDDEN_SIZE).to(server_device)
+        elif config.MATCH == 'E':
+            global_model = model.init_model(config.MAX_HIDDEN_SIZE).to(server_device)
+        else:
+            raise ValueError(f"Unknown MATCH mode: {config.MATCH}")
+    else:
+        global_model = model.init_model(config.MAX_HIDDEN_SIZE).to(server_device)
 
     # Optimizer and LR Scheduler
     optimizer = optim.SGD(global_model.parameters(), lr=config.LEARNING_RATE, momentum=config.MOMENTUM, weight_decay=config.WEIGHT_DECAY)
@@ -158,9 +166,15 @@ def main():
                     client_contributions.append(result)
 
         # Server aggregation phase
-        global_model_state = federated.aggregate_heterofl(
-            global_model.state_dict(), client_contributions
-        )
+        if config.REARRANGE:
+            print("--- Aggregating with rearrangement ---")
+            global_model_state = federated.aggregate_rearrange(
+                global_model.state_dict(), client_contributions
+            )
+        else:
+            global_model_state = federated.aggregate_heterofl(
+                global_model.state_dict(), client_contributions
+            )
         global_model.load_state_dict(global_model_state)
         
         optimizer.step() # nothing # erase?
