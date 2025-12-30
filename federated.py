@@ -105,7 +105,7 @@ def aggregate_rearrange(global_model_state, client_contributions):
         # This should not happen if client_contributions is not empty
         return global_model_state
 
-    print(f"\n--- Rearranging models based on the smallest model (size: {min_size}) ---")
+    # print(f"\n--- Rearranging models based on the smallest model (size: {min_size}) ---")
 
     # Define permutation spec for the model
     ps = mlp_permutation_spec()
@@ -116,10 +116,10 @@ def aggregate_rearrange(global_model_state, client_contributions):
         if client_state is ref_client_state:
             # The reference model does not need to be permuted
             permuted_client_contributions.append((client_state, client_size))
-            print(f"Skipping permutation for the reference model (size: {client_size}).")
+            # print(f"Skipping permutation for the reference model (size: {client_size}).")
             continue
 
-        print(f"Rearranging client model with size {client_size}...")
+        # print(f"Rearranging client model with size {client_size}...")
         
         params_b = client_state
         
@@ -137,7 +137,7 @@ def aggregate_rearrange(global_model_state, client_contributions):
         permuted_params_b = apply_permutation(ps, perm, params_b)
         
         permuted_client_contributions.append((permuted_params_b, client_size))
-        print(f"Finished rearranging client model with size {client_size}.")
+        # print(f"Finished rearranging client model with size {client_size}.")
 
     # 2. Aggregate the permuted models
     # Create a zero-initialized state for aggregation and a counter
