@@ -18,14 +18,33 @@ def permutation_spec_from_axes_to_perm(axes_to_perm: dict) -> PermutationSpec:
     return PermutationSpec(perm_to_axes=dict(perm_to_axes), axes_to_perm=axes_to_perm)
 
 # make it scalable
-def mlp_permutation_spec() -> PermutationSpec:
+def mlp2_permutation_spec() -> PermutationSpec:
     """Permutation spec for the MLP model in HeteroFM."""
     return permutation_spec_from_axes_to_perm({
         "layers.1.weight": ("P_0", None),
+
         "layers.3.weight": ("P_0",),
         "layers.3.bias": ("P_0",),
+        
         "layers.5.weight": (None, "P_0"),
         "layers.5.bias": (None,),
+    })
+
+def mlp3_permutation_spec() -> PermutationSpec:
+    """Permutation spec for the MLP model in HeteroFM."""
+    return permutation_spec_from_axes_to_perm({
+        "layers.1.weight": ("P_0", None), 
+
+        "layers.3.weight": ("P_0",), 
+        "layers.3.bias": ("P_0",),
+
+        "layers.5.weight": ("P_1", "P_0"), 
+
+        "layers.7.weight": ("P_1",), 
+        "layers.7.bias": ("P_1",),
+
+        "layers.9.weight": (None, "P_1"),
+        "layers.9.bias": (None,),
     })
 
 def get_permuted_param(ps: PermutationSpec, perm, k: str, params, except_axis=None):
@@ -70,9 +89,9 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
             # print(f"Processing permutation {p} (size_a: {size_a}, size_b: {size_b})")
 
             # Cost matrix dimensions depend on MATCH mode
-            if match_mode == 'C' or (match_mode == 'E' and permute_mode == 'Z'):
+            if match_mode == 'C':
                 cost_matrix = torch.zeros(size_a, size_b)
-            elif match_mode == 'E' and permute_mode == 'M':
+            elif match_mode == 'E':
                 cost_matrix = torch.zeros(size_b, size_b)
             else:
                 raise ValueError(f"Unknown MATCH mode: {match_mode}")
@@ -80,6 +99,16 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
             for wk, axis in ps.perm_to_axes[p]:
                 w_a = params_a[wk].clone()
                 w_b_permuted = get_permuted_param(ps, perm, wk, params_b, except_axis=axis)
+
+                # Handle padding for 'E' mode (zero-padding the smaller model 'a')
+                if match_mode == 'E' and size_a < size_b:
+                    pad_shape = list(w_a.shape)
+                    pad_shape[axis] = size_b - size_a
+                    if permute_mode == 'Z':
+                        padding = torch.zeros(pad_shape, dtype=w_a.dtype, device=w_a.device)
+                    elif permute_mode == 'M':
+                        padding = w_b_permuted.narrow(dim=axis, start=size_a, length=size_b - size_a)
+                    w_a = torch.cat([w_a, padding], dim=axis)
 
                 # Align axes for dot product
                 w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
@@ -92,15 +121,6 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
                 dot_product = w_a_flat @ w_b_flat.T
                 # print(f"Dot product shape for {wk}, axis {axis}: {dot_product.shape}")
 
-                if match_mode == 'E' and permute_mode == 'M':
-                    # dot_product[i, j] = w_b_flat[j] ** 2 if i >= size_a
-                    b_sq_norm = (w_b_flat ** 2).sum(dim=1)
-                    pad_rows = w_b_flat.shape[0] - w_a_flat.shape[0]
-                    if pad_rows > 0:
-                        padding_block = b_sq_norm.unsqueeze(0).expand(pad_rows, -1)
-                        dot_product = torch.cat([dot_product, padding_block], dim=0)
-                    # print(f"Padded dot product shape for E+M: {dot_product.shape}")
-                
                 # Handle PERMUTE mode for cost objective
                 if permute_mode == 'M':
                     cost = dot_product
@@ -118,7 +138,7 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
             # --- Update permutation for model b ---
             new_perm_for_b = torch.arange(size_b)
             
-            if match_mode == 'C' or (match_mode == 'E' and permute_mode == 'Z'):
+            if match_mode == 'C':
                 # The old permutation maps the first size_a indices of b to some other indices.
                 old_L = cost_matrix[torch.arange(size_a), perm[p][:size_a]].sum()
                 # Reorder the chosen 'ci' neurons to come first, aligned with 'ri'
@@ -126,7 +146,7 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
                 unmatched_b_indices = torch.tensor([i for i in range(size_b) if i not in ci], dtype=torch.long)
                 new_perm_for_b = torch.cat([sorted_ci, unmatched_b_indices])
 
-            elif match_mode == 'E' and permute_mode == 'M':
+            elif match_mode == 'E':
                 old_L = torch.diag(cost_matrix[:, perm[p]]).sum()
                 # The assignment is a full permutation of size_b
                 new_perm_for_b = torch.from_numpy(ci[np.argsort(ri)]).long()

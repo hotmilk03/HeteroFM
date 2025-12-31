@@ -50,7 +50,7 @@ class MLP3(nn.Module):
         return self.layers(x)
 
 def init_model(hidden_size, scaler_rate=1.0):
-    # model = MLP2(hidden_size, scaler_rate)
-    model = MLP3(hidden_size, scaler_rate)
+    model = MLP2(hidden_size, scaler_rate)
+    # model = MLP3(hidden_size, scaler_rate)
     model.apply(init_param)
     return model

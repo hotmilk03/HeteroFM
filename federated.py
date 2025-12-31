@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import copy
 from model import init_model
-from weight_matching import mlp_permutation_spec, weight_matching, apply_permutation
+from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, weight_matching, apply_permutation
 import config
 
 def client_update(client_loader, global_model_state, client_size, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device):
@@ -108,7 +108,8 @@ def aggregate_rearrange(global_model_state, client_contributions):
     # print(f"\n--- Rearranging models based on the smallest model (size: {min_size}) ---")
 
     # Define permutation spec for the model
-    ps = mlp_permutation_spec()
+    ps = mlp2_permutation_spec()
+    # ps = mlp3_permutation_spec()
     params_a = ref_client_state  # Reference for permutation
 
     permuted_client_contributions = []
