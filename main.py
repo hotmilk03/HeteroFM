@@ -92,19 +92,17 @@ def main():
     )
 
     # data
-    train_dataset, test_dataset = data.load_data(config.DATA_DIR)
-    client_loaders, test_loader, label_splits = data.prepare_data(
-        train_dataset, 
-        test_dataset, 
+    dataset = data.Dataset(config.DATA_SET, config.DATA_DIR)
+    client_loaders, test_loader, label_splits = dataset.prepare_data(
         config.NUM_CLIENTS, 
         config.BATCH_SIZE,
         config.DATA_SPLIT_MODE,
-        config.NON_IID_N_CLASSES_PER_CLIENT
+        config.NON_IID_CLASSES_RATIO_PER_CLIENT
     )
 
     if config.DATA_SPLIT_MODE == 'non-iid':
         print("\n--- Non-IID Label Distribution ---")
-        print(f"  - Classes per Client: {config.NON_IID_N_CLASSES_PER_CLIENT}")
+        print(f"  - Classes per Client Ratio: {config.NON_IID_CLASSES_RATIO_PER_CLIENT}")
         for client_id, labels in label_splits.items():
             print(f"    - Client {client_id}: Classes {sorted(labels)}")
         print("----------------------------------\n")

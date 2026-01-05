@@ -14,6 +14,8 @@ LOCAL_EPOCHS = 5
 # MODEL PARAMETERS
 # =============================================================================
 
+MODEL = 'mlp2' # 'mlp2', 'mlp3', 'vgg', 'resnet'
+
 MLP_BASE_WIDTH = 1024
 
 W_CLIENT = [1/8, 1/8, 1/4, 1/4, 1/2, 1/2, 1/2, 1, 1, 1]
@@ -30,13 +32,22 @@ MIN_W = min(W_CLIENT)
 # DATA PARAMETERS
 # =============================================================================
 
+model_to_dataset = {
+    'mlp2': 'mnist',
+    'mlp3': 'mnist',
+    'vgg': 'cifar10',
+    'resnet': 'imagenet'
+}
+DATA_SET = model_to_dataset[MODEL] # 'mnist', 'cifar10', 'imagenet'
+
 BATCH_SIZE = 32
 DATA_DIR = './data'
 DATA_SPLIT_MODE = 'non-iid' # Data split mode. 'iid' or 'non-iid'.
 
 # Number of classes assigned to each client in the non-iid setting.
-# For MNIST, there are 10 classes in total.
-NON_IID_N_CLASSES_PER_CLIENT = 2
+# This value is a ratio of the total number of classes.
+NON_IID_CLASSES_RATIO_PER_CLIENT = 0.2
+# NON_IID_N_CLASSES_PER_CLIENT = 2
 
 # =============================================================================
 # TRAINING PARAMETERS
