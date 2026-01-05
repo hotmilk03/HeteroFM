@@ -12,14 +12,14 @@ import federated
 import model
 
 def run_client_gpu(args):
-    client_id, gpu_index, global_state, client_loader, client_size, scaler_rate, label_split, use_masked_loss, learning_rate, momentum, weight_decay, grad_clip_norm = args
+    client_id, gpu_index, global_state, client_loader, client_size_ratio, scaler_rate, label_split, use_masked_loss, learning_rate, momentum, weight_decay, grad_clip_norm = args
     device = torch.device(f'cuda:{gpu_index}')
 
     try:
         client_state, _ = federated.client_update(
             client_loader=client_loader,
             global_model_state=global_state,
-            client_size=client_size,
+            client_size_ratio=client_size_ratio,
             scaler_rate=scaler_rate,
             label_split=label_split,
             use_masked_loss=use_masked_loss,
@@ -30,7 +30,7 @@ def run_client_gpu(args):
             weight_decay=weight_decay,
             device=device
         )
-        return client_state, client_size
+        return client_state, client_size_ratio
 
     except Exception as e:
         print(f"Error in client {client_id} on GPU {gpu_index}: {e}")
@@ -63,7 +63,7 @@ def main():
     print("=================================")
     print(f"  - Data Split: {config.DATA_SPLIT_MODE}")
     print(f"  - Number of Clients: {config.NUM_CLIENTS}")
-    print(f"  - Client Hidden Sizes: {config.CLIENT_SIZES}")
+    print(f"  - Client Hidden Sizes: {config.W_CLIENT}")
     print(f"  - Communication Rounds: {config.COMMUNICATION_ROUNDS}")
     print(f"  - Local Epochs: {config.LOCAL_EPOCHS}")
     print("=================================\n")
@@ -75,13 +75,13 @@ def main():
     server_device = torch.device("cpu")
     if config.REARRANGE:
         if config.MATCH == 'C':
-            global_model = model.init_model(config.MIN_HIDDEN_SIZE).to(server_device)
+            global_model = model.init_model(config.MIN_W).to(server_device)
         elif config.MATCH == 'E':
-            global_model = model.init_model(config.MAX_HIDDEN_SIZE).to(server_device)
+            global_model = model.init_model(config.MAX_W).to(server_device)
         else:
             raise ValueError(f"Unknown MATCH mode: {config.MATCH}")
     else:
-        global_model = model.init_model(config.MAX_HIDDEN_SIZE).to(server_device)
+        global_model = model.init_model(config.MAX_W).to(server_device)
 
     # Optimizer and LR Scheduler
     optimizer = optim.SGD(global_model.parameters(), lr=config.LEARNING_RATE, momentum=config.MOMENTUM, weight_decay=config.WEIGHT_DECAY)
@@ -139,7 +139,7 @@ def main():
             global_model_state_cpu = copy.deepcopy(global_model.state_dict())
             for i in range(config.NUM_CLIENTS):
                 gpu_index = i % num_gpus if num_gpus > 0 else 0
-                scaler_rate = config.CLIENT_SIZES[i] / config.MAX_HIDDEN_SIZE
+                scaler_rate = config.W_CLIENT[i] / config.MAX_W
                 label_split = label_splits.get(i)
 
                 args = (
@@ -147,7 +147,7 @@ def main():
                     gpu_index,
                     global_model_state_cpu,
                     client_loaders[i],
-                    config.CLIENT_SIZES[i],
+                    config.W_CLIENT[i],
                     scaler_rate,
                     label_split,
                     config.USE_MASKED_LOSS,

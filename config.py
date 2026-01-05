@@ -14,10 +14,17 @@ LOCAL_EPOCHS = 5
 # MODEL PARAMETERS
 # =============================================================================
 
-CLIENT_SIZES = [128, 128, 256, 256, 512, 512, 512, 1024, 1024, 1024]  # [32, 32, 48, 48, 64, 64, 96, 96, 128, 128]
-NUM_CLIENTS = len(CLIENT_SIZES)
-MAX_HIDDEN_SIZE = max(CLIENT_SIZES)
-MIN_HIDDEN_SIZE = min(CLIENT_SIZES)
+MLP_BASE_WIDTH = 1024
+
+W_CLIENT = [1/8, 1/8, 1/4, 1/4, 1/2, 1/2, 1/2, 1, 1, 1]
+
+# CLIENT_SIZES = [128, 128, 256, 256, 512, 512, 512, 1024, 1024, 1024]  # [32, 32, 48, 48, 64, 64, 96, 96, 128, 128]
+# MAX_HIDDEN_SIZE = max(W_CLIENT)
+# MIN_HIDDEN_SIZE = min(W_CLIENT)
+
+NUM_CLIENTS = len(W_CLIENT)
+MAX_W = max(W_CLIENT)
+MIN_W = min(W_CLIENT)
 
 # =============================================================================
 # DATA PARAMETERS

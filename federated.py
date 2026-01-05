@@ -6,9 +6,9 @@ from model import init_model
 from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, weight_matching, apply_permutation
 import config
 
-def client_update(client_loader, global_model_state, client_size, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device):
+def client_update(client_loader, global_model_state, client_size_ratio, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device):
     # Create a local model with the client's specific size
-    local_model = init_model(client_size, scaler_rate).to(device)
+    local_model = init_model(client_size_ratio, scaler_rate).to(device)
     local_model_state = local_model.state_dict()
     
     # Slice the global model's state to fit the local model
@@ -49,7 +49,7 @@ def client_update(client_loader, global_model_state, client_size, scaler_rate, l
             
             optimizer.step()
             
-    return local_model.cpu().state_dict(), client_size
+    return local_model.cpu().state_dict(), client_size_ratio
 
 def aggregate_heterofl(global_model_state, client_contributions):
     """
@@ -64,7 +64,7 @@ def aggregate_heterofl(global_model_state, client_contributions):
         count_state[key] = torch.zeros_like(count_state[key], dtype=torch.float32)
         
     # Sum up all client model contributions to the appropriate slices
-    for client_state, client_size in client_contributions:
+    for client_state, _ in client_contributions:
         for key, client_param in client_state.items():
             if key in agg_state:
                 slices = [slice(0, dim) for dim in client_param.shape]
@@ -94,11 +94,11 @@ def aggregate_rearrange(global_model_state, client_contributions):
         return global_model_state
 
     # 1. Find the client with the smallest size to use as the reference model
-    min_size = float('inf')
+    min_size_ratio = float('inf')
     ref_client_state = None
-    for state, size in client_contributions:
-        if size < min_size:
-            min_size = size
+    for state, size_ratio in client_contributions:
+        if size_ratio < min_size_ratio:
+            min_size_ratio = size_ratio
             ref_client_state = state
     
     if ref_client_state is None:
@@ -113,10 +113,10 @@ def aggregate_rearrange(global_model_state, client_contributions):
     params_a = ref_client_state  # Reference for permutation
 
     permuted_client_contributions = []
-    for client_state, client_size in client_contributions:
+    for client_state, client_size_ratio in client_contributions:
         if client_state is ref_client_state:
             # The reference model does not need to be permuted
-            permuted_client_contributions.append((client_state, client_size))
+            permuted_client_contributions.append((client_state, client_size_ratio))
             # print(f"Skipping permutation for the reference model (size: {client_size}).")
             continue
 
@@ -137,7 +137,7 @@ def aggregate_rearrange(global_model_state, client_contributions):
         # Apply the permutation to params_b
         permuted_params_b = apply_permutation(ps, perm, params_b)
         
-        permuted_client_contributions.append((permuted_params_b, client_size))
+        permuted_client_contributions.append((permuted_params_b, client_size_ratio))
         # print(f"Finished rearranging client model with size {client_size}.")
 
     # 2. Aggregate the permuted models
@@ -149,7 +149,7 @@ def aggregate_rearrange(global_model_state, client_contributions):
         count_state[key] = torch.zeros_like(count_state[key], dtype=torch.float32)
 
     # Sum up all permuted client model contributions
-    for client_state, client_size in permuted_client_contributions:
+    for client_state, _ in permuted_client_contributions:
         for key, client_param in client_state.items():
             if key in agg_state:
                 slices = [slice(0, min(client_dim, agg_dim)) for client_dim, agg_dim in zip(client_param.shape, agg_state[key].shape)]

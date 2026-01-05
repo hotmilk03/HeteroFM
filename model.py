@@ -1,5 +1,6 @@
 import torch.nn as nn
 from modules import Scaler
+import config
 
 def init_param(m):
     if isinstance(m, nn.Linear):
@@ -8,8 +9,9 @@ def init_param(m):
             m.bias.data.zero_()
 
 class MLP2(nn.Module):
-    def __init__(self, hidden_size, scaler_rate=1.0, track=False): # dropout_p=0.5
+    def __init__(self, hidden_size_ratio, scaler_rate=1.0, track=False): # dropout_p=0.5
         super(MLP2, self).__init__()
+        hidden_size = int(hidden_size_ratio * config.MLP_BASE_WIDTH)
         self.layers = nn.Sequential(
             nn.Flatten(),
 
@@ -49,8 +51,8 @@ class MLP3(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-def init_model(hidden_size, scaler_rate=1.0):
-    model = MLP2(hidden_size, scaler_rate)
-    # model = MLP3(hidden_size, scaler_rate)
+def init_model(hidden_size_ratio, scaler_rate=1.0):
+    model = MLP2(hidden_size_ratio, scaler_rate)
+    # model = MLP3(hidden_size_ratio, scaler_rate)
     model.apply(init_param)
     return model
