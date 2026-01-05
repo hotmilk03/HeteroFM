@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import copy
 from model import init_model
-from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, weight_matching, apply_permutation
+from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, vgg_permutation_spec, resnet50_permutation_spec, weight_matching, apply_permutation
 import config
 
 def client_update(client_loader, global_model_state, client_size_ratio, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device):
@@ -108,8 +108,17 @@ def aggregate_rearrange(global_model_state, client_contributions):
     # print(f"\n--- Rearranging models based on the smallest model (size: {min_size}) ---")
 
     # Define permutation spec for the model
-    ps = mlp2_permutation_spec()
-    # ps = mlp3_permutation_spec()
+    if config.MODEL == 'mlp2':
+        ps = mlp2_permutation_spec()
+    elif config.MODEL == 'mlp3':
+        ps = mlp3_permutation_spec()
+    elif config.MODEL == 'vgg':
+        ps = vgg_permutation_spec()
+    elif config.MODEL == 'resnet':
+        ps = resnet50_permutation_spec()
+    else:
+        raise ValueError(f"No permutation spec defined for model: {config.MODEL}")
+        
     params_a = ref_client_state  # Reference for permutation
 
     permuted_client_contributions = []

@@ -61,11 +61,21 @@ def evaluate(model, test_loader, device):
 def main():
     print("Starting HeteroFM Experiment...")
     print("=================================")
+    print(f"  - Model: {config.MODEL}")
+    print(f"  - Dataset: {config.DATA_SET}")
     print(f"  - Data Split: {config.DATA_SPLIT_MODE}")
     print(f"  - Number of Clients: {config.NUM_CLIENTS}")
-    print(f"  - Client Hidden Sizes: {config.W_CLIENT}")
+    print(f"  - Client Hidden Sizes Ratio: {config.W_CLIENT}")
+    print(f"  - Classes per Client Ratio: {config.NON_IID_CLASSES_RATIO_PER_CLIENT}")
+    if config.REARRANGE:
+        print("  - Model Aggregation: Rearrangement")
+        print(f"  - Permute Mode: {config.PERMUTE}")
+        print(f"  - Match Mode: {config.MATCH}")
+    else:
+        print("  - Model Aggregation: HeteroFL")
     print(f"  - Communication Rounds: {config.COMMUNICATION_ROUNDS}")
     print(f"  - Local Epochs: {config.LOCAL_EPOCHS}")
+    print(f"  - Learning Rate: {config.LEARNING_RATE}")
     print("=================================\n")
 
     # setup
@@ -100,13 +110,12 @@ def main():
         config.NON_IID_CLASSES_RATIO_PER_CLIENT
     )
 
-    if config.DATA_SPLIT_MODE == 'non-iid':
+    if config.DATA_SPLIT_MODE == 'non-iid' and config.MODEL in ['mlp2', 'mlp3', 'vgg']:
         print("\n--- Non-IID Label Distribution ---")
         print(f"  - Classes per Client Ratio: {config.NON_IID_CLASSES_RATIO_PER_CLIENT}")
         for client_id, labels in label_splits.items():
             print(f"    - Client {client_id}: Classes {sorted(labels)}")
         print("----------------------------------\n")
-
     
     # Federated Training Loop
     print("Starting Federated Training...\n")
