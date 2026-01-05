@@ -62,32 +62,48 @@ log_filenames = [
     # 'results/perm/MC/251223_noniid_mlp_2layer_classPerClient=unique5_perm_MC.log',
     # 'results/perm/MC/251223_noniid_mlp_2layer_classPerClient=unique9_perm_MC.log',
 
-    'results/perm/mlp_2layer/ME/251223_noniid_mlp_2layer_classPerClient=unique2_perm_ME.log',
-    'results/perm/mlp_2layer/ME_lr=0.001/251223_noniid_mlp_2layer_classPerClient=unique2_perm_ME_lr=0.001.log'
+    # 'results/perm/mlp_2layer/ME/251223_noniid_mlp_2layer_classPerClient=unique2_perm_ME.log',
+    # 'results/perm/mlp_2layer/ME_lr=0.001/251223_noniid_mlp_2layer_classPerClient=unique2_perm_ME_lr=0.001.log'
 
     # 'results/HeteroFL/mlp_2layer/class_per_client_sbn_nodropout/251221_noniid_mlp_2layer_classPerClient=unique9_sbn.log',
     # 'results/perm/ME/251223_noniid_mlp_2layer_classPerClient=unique9_perm_ME.log',
     # 'results/perm/MC/251223_noniid_mlp_2layer_classPerClient=unique9_perm_MC.log',
     # 'results/perm/ZE/251223_noniid_mlp_2layer_classPerClient=unique9_perm_ZE.log',
     # 'results/perm/ZC/251223_noniid_mlp_2layer_classPerClient=unique9_perm_ZC.log'
+
+    'temp-saved/temp2.log',
+    'temp-saved/temp3.log',
+    'temp-saved/temp4.log',
+    'temp.log',
+    'temp2.log',
+    'temp3.log',
+    'temp4.log'
 ]
 label_names = [
     # '2 class per client',
     # '5 class per client',
     # '9 class per client',
 
-    'lr=0.01',
-    'lr=0.001'
+    # 'lr=0.01',
+    # 'lr=0.001'
     
     # 'HeteroFL',
     # 'ME',
     # 'MC',
     # 'ZE',
     # 'ZC'
+
+    'temp-saved/temp2.log',
+    'temp-saved/temp3.log',
+    'temp-saved/temp4.log',
+    'temp.log',
+    'temp2.log',
+    'temp3.log',
+    'temp4.log'
 ]
 
 # output_image = 'noniid_mlp_2layer_by_perm_classPerClient=unique5.png'
 # title = 'Global acc by perm (MLP 2-layer, non-iid, 5 class per client, lr=0.01)'
-output_image = 'noniid_mlp_2layer_perm_ME_by_lr_classPerClient=unique2.png'
+output_image = 'temps.png' # 'noniid_mlp_2layer_perm_ME_by_lr_classPerClient=unique2.png'
 title = 'Acc with perm by lr (MLP 2-layer, non-iid, ME, 2 class per client)' # lr=0.01
 parse_log_and_plot(log_filenames, label_names, title, output_image)

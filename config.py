@@ -16,17 +16,20 @@ LOCAL_EPOCHS = 5
 
 MODEL = 'mlp2' # 'mlp2', 'mlp3', 'vgg', 'resnet'
 
+VGG_CFG = {
+    'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
+}
+
 MLP_BASE_WIDTH = 1024
+VGG_BASE_WIDTH = 512  # Defines the width of the VGG model that w=1.0 corresponds to
+RESNET_BASE_WIDTH = 64
 
 W_CLIENT = [1/8, 1/8, 1/4, 1/4, 1/2, 1/2, 1/2, 1, 1, 1]
-
-# CLIENT_SIZES = [128, 128, 256, 256, 512, 512, 512, 1024, 1024, 1024]  # [32, 32, 48, 48, 64, 64, 96, 96, 128, 128]
-# MAX_HIDDEN_SIZE = max(W_CLIENT)
-# MIN_HIDDEN_SIZE = min(W_CLIENT)
-
 NUM_CLIENTS = len(W_CLIENT)
 MAX_W = max(W_CLIENT)
 MIN_W = min(W_CLIENT)
+
+# CLIENT_SIZES = [128, 128, 256, 256, 512, 512, 512, 1024, 1024, 1024]
 
 # =============================================================================
 # DATA PARAMETERS
@@ -47,7 +50,6 @@ DATA_SPLIT_MODE = 'non-iid' # Data split mode. 'iid' or 'non-iid'.
 # Number of classes assigned to each client in the non-iid setting.
 # This value is a ratio of the total number of classes.
 NON_IID_CLASSES_RATIO_PER_CLIENT = 0.2
-# NON_IID_N_CLASSES_PER_CLIENT = 2
 
 # =============================================================================
 # TRAINING PARAMETERS
