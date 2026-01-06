@@ -14,7 +14,7 @@ LOCAL_EPOCHS = 5
 # MODEL PARAMETERS
 # =============================================================================
 
-MODEL = 'mlp2' # 'mlp2', 'mlp3', 'vgg', 'resnet'
+MODEL = 'vgg' # 'mlp2', 'mlp3', 'vgg', 'resnet'
 
 VGG_CFG = {
     'VGG11': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
@@ -28,8 +28,6 @@ W_CLIENT = [1/8, 1/8, 1/4, 1/4, 1/2, 1/2, 1/2, 1, 1, 1]
 NUM_CLIENTS = len(W_CLIENT)
 MAX_W = max(W_CLIENT)
 MIN_W = min(W_CLIENT)
-
-# CLIENT_SIZES = [128, 128, 256, 256, 512, 512, 512, 1024, 1024, 1024]
 
 # =============================================================================
 # DATA PARAMETERS
@@ -49,7 +47,7 @@ DATA_SPLIT_MODE = 'non-iid' # Data split mode. 'iid' or 'non-iid'.
 
 # Number of classes assigned to each client in the non-iid setting.
 # This value is a ratio of the total number of classes.
-NON_IID_CLASSES_RATIO_PER_CLIENT = 0.2
+NON_IID_CLASSES_RATIO_PER_CLIENT = 0.9
 
 # =============================================================================
 # TRAINING PARAMETERS
@@ -72,11 +70,12 @@ NUM_WORKERS = 0 # 변수 없애고 사용하는 부분도 옵션 그냥 없애�
 # REARRANGEMENT PARAMETERS
 # =============================================================================
 
-REARRANGE = True
+REARRANGE = False
 PERMUTE = 'M' # 'Z' for zeroing, 'M' for maximizing
 MATCH = 'E' # 'C' for contraction, 'E' for extension
 
-# Z + C : loss = 긴 것을 짧은 것의 길이에 맞추어 내적한 값의 절대값
-# M + C : loss = 긴 것을 짧은 것의 길이에 맞추어 내적한 값의 (-1) 배
-# Z + E : loss = 짧은 것을 긴 것의 길이에 맞추어 0으로 패딩 후 내적한 값의 절대값
-# M + E : loss = 짧은 것을 긴 것의 길이에 맞추어 copy 패딩 (뒤쪽 dim에 해당하는 원소의 값은 긴 것의 값과 일치시킴) 후 내적한 값의 (-1) 배
+# =============================================================================
+# PRINTING OPTIONS
+# =============================================================================
+
+SILENT = True

@@ -160,40 +160,52 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
             size_a = params_a[ps.perm_to_axes[p][0][0]].shape[ps.perm_to_axes[p][0][1]]
             size_b = perm_sizes_b[p]
 
-            # print(f"Processing permutation {p} (size_a: {size_a}, size_b: {size_b})")
+            if not silent:
+                print(perm_names)
+                print(ps.perm_to_axes)
+                print(f"Processing permutation {p} (size_a: {size_a}, size_b: {size_b})")
 
-            # Cost matrix dimensions depend on MATCH mode
-            if match_mode == 'C':
-                cost_matrix = torch.zeros(size_a, size_b)
-            elif match_mode == 'E':
-                cost_matrix = torch.zeros(size_b, size_b)
-            else:
-                raise ValueError(f"Unknown MATCH mode: {match_mode}")
-
+            cost_matrix = torch.zeros(size_a, size_b)
+            
             for wk, axis in ps.perm_to_axes[p]:
                 w_a = params_a[wk].clone()
                 w_b_permuted = get_permuted_param(ps, perm, wk, params_b, except_axis=axis)
+                
+                # Define valid region slice: keep 'axis' full, crop others to A's size
+                slices = [slice(0, w_a.shape[d]) if d != axis else slice(None) for d in range(w_a.ndim)]
 
-                # Handle padding for 'E' mode (zero-padding the smaller model 'a')
-                if match_mode == 'E' and size_a < size_b:
-                    pad_shape = list(w_a.shape)
-                    pad_shape[axis] = size_b - size_a
-                    if permute_mode == 'Z':
-                        padding = torch.zeros(pad_shape, dtype=w_a.dtype, device=w_a.device)
-                    elif permute_mode == 'M':
-                        padding = w_b_permuted.narrow(dim=axis, start=size_a, length=size_b - size_a)
-                    w_a = torch.cat([w_a, padding], dim=axis)
+                if match_mode == 'C':
+                    # Cut B to match A's dimensions
+                    w_b_permuted = w_b_permuted[tuple(slices)]
+
+                elif match_mode == 'E':
+                    # Prepare target shape: A's size on 'axis', B's size on others
+                    target_shape = list(w_b_permuted.shape)
+                    target_shape[axis] = w_a.shape[axis]
+
+                    if permute_mode == 'M':
+                        # Init with B's values (crop 'axis' to match A)
+                        axis_subset = [slice(None)] * w_a.ndim
+                        axis_subset[axis] = slice(0, w_a.shape[axis])
+                        w_a_new = w_b_permuted[tuple(axis_subset)].clone()
+
+                    elif permute_mode == 'Z':
+                        # Init with zeros
+                        w_a_new = torch.zeros(target_shape, dtype=w_a.dtype, device=w_a.device)
+                    
+                    # Inject A into the valid region
+                    w_a_new[tuple(slices)] = w_a
+                    w_a = w_a_new
 
                 # Align axes for dot product
                 w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
                 w_b_flat = w_b_permuted.movedim(axis, 0).reshape(w_b_permuted.shape[axis], -1)
-
-                if w_a_flat.shape[1] != w_b_flat.shape[1]:
-                    if w_a_flat.shape[0] == w_b_flat.shape[1]: w_b_flat = w_b_flat.T
-                    else: w_a_flat = w_a_flat.T
                 
                 dot_product = w_a_flat @ w_b_flat.T
-                # print(f"Dot product shape for {wk}, axis {axis}: {dot_product.shape}")
+                
+                if not silent:
+                    print(f"w_a_flat shape: {w_a_flat.shape}, w_b_flat shape: {w_b_flat.shape}")
+                    print(f"Dot product shape for {wk}, axis {axis}: {dot_product.shape}")
 
                 # Handle PERMUTE mode for cost objective
                 if permute_mode == 'M':
@@ -205,7 +217,12 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
                 
                 # The cost matrix size is determined by the dot_product shape
                 cost_matrix[:cost.shape[0], :cost.shape[1]] += cost
-            
+
+                if not silent:
+                    # should be same
+                    print(f"Cost shape for {wk}, axis {axis}: {cost.shape}")
+                    print(f"cost_matrix.shape: {cost_matrix.shape}")
+                
             # Solve assignment problem
             ri, ci = linear_sum_assignment(cost_matrix.numpy(), maximize=True)
 

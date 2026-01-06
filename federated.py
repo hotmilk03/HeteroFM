@@ -132,6 +132,15 @@ def aggregate_rearrange(global_model_state, client_contributions):
         # print(f"Rearranging client model with size {client_size}...")
         
         params_b = client_state
+
+        if not config.SILENT:
+            # print(params_a)
+            # print(params_b)
+            print(params_a.keys())
+            print(params_b.keys())
+            for key in params_a:
+                if key in params_b:
+                    print(f"Layer {key}: params_a shape = {params_a[key].shape}, params_b shape = {params_b[key].shape}")
         
         # Find the permutation that aligns params_b with params_a (the smallest model)
         perm = weight_matching(
@@ -140,7 +149,7 @@ def aggregate_rearrange(global_model_state, client_contributions):
             params_b, 
             permute_mode=config.PERMUTE,
             match_mode=config.MATCH,
-            silent=True
+            silent=config.SILENT
         )
         
         # Apply the permutation to params_b
