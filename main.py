@@ -5,6 +5,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
+import numpy as np
 
 import config
 import data
@@ -12,12 +13,14 @@ import federated
 import model
 
 def run_client_gpu(args):
-    client_id, gpu_index, global_state, client_loader, client_size_ratio, scaler_rate, label_split, use_masked_loss, learning_rate, momentum, weight_decay, grad_clip_norm = args
+    client_id, gpu_index, global_state, client_loader, test_loader, client_test_loader, client_size_ratio, scaler_rate, label_split, use_masked_loss, learning_rate, momentum, weight_decay, grad_clip_norm = args
     device = torch.device(f'cuda:{gpu_index}')
 
     try:
-        client_state, _ = federated.client_update(
+        client_state, size_ratio, metrics = federated.client_update(
             client_loader=client_loader,
+            test_loader=test_loader,
+            local_test_loader=client_test_loader,
             global_model_state=global_state,
             client_size_ratio=client_size_ratio,
             scaler_rate=scaler_rate,
@@ -30,33 +33,12 @@ def run_client_gpu(args):
             weight_decay=weight_decay,
             device=device
         )
-        return client_state, client_size_ratio
+        return client_state, size_ratio, metrics
 
     except Exception as e:
         print(f"Error in client {client_id} on GPU {gpu_index}: {e}")
         traceback.print_exc()
         raise
-
-def evaluate(model, test_loader, device):
-    """
-    Evaluates the model's performance on the test dataset.
-    """
-    model.to(device)
-    model.eval()
-    criterion = nn.CrossEntropyLoss(reduction='sum')
-    test_loss = 0
-    correct = 0
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images, labels = images.to(device), labels.to(device)
-            output = model(images)
-            test_loss += criterion(output, labels).item()
-            pred = output.argmax(dim=1, keepdim=True)
-            correct += pred.eq(labels.view_as(pred)).sum().item()
-            
-    test_loss /= len(test_loader.dataset)
-    accuracy = 100. * correct / len(test_loader.dataset)
-    return test_loss, accuracy
 
 def main():
     print("Starting HeteroFM Experiment...")
@@ -103,7 +85,7 @@ def main():
 
     # data
     dataset = data.Dataset(config.DATA_SET, config.DATA_DIR)
-    client_loaders, test_loader, label_splits = dataset.prepare_data(
+    client_loaders, client_test_loaders,test_loader, label_splits = dataset.prepare_data(
         config.NUM_CLIENTS, 
         config.BATCH_SIZE,
         config.DATA_SPLIT_MODE,
@@ -124,7 +106,7 @@ def main():
     # init evaluation before training
     comm_round = 0
     eval_device = torch.device("cuda:0" if num_gpus > 0 else "cpu")
-    test_loss, accuracy = evaluate(global_model, test_loader, eval_device)
+    test_loss, accuracy = federated.evaluate(global_model, test_loader, eval_device)
     global_model.cpu()
 
     print(f"Round {comm_round:3d}/{config.COMMUNICATION_ROUNDS} | "
@@ -138,6 +120,7 @@ def main():
         print(f"\nRound {comm_round:3d}/{config.COMMUNICATION_ROUNDS} | Learning Rate: {current_lr:.5f}")
 
         client_contributions = []
+        client_metrics = []
         global_model_state_cpu = copy.deepcopy(global_model.state_dict())
 
         # parallel client updates using ThreadPoolExecutor
@@ -154,6 +137,8 @@ def main():
                     gpu_index,
                     global_model_state_cpu,
                     client_loaders[i],
+                    test_loader,
+                    client_test_loaders[i],
                     config.W_CLIENT[i],
                     scaler_rate,
                     label_split,
@@ -168,9 +153,9 @@ def main():
             futures = [executor.submit(run_client_gpu, task) for task in tasks]
 
             for future in as_completed(futures):
-                result = future.result()
-                if result is not None:
-                    client_contributions.append(result)
+                client_state, client_size, metrics = future.result()
+                client_contributions.append((client_state, client_size))
+                client_metrics.append(metrics)
 
         # Server aggregation phase
         if config.REARRANGE:
@@ -189,7 +174,7 @@ def main():
 
         # Evaluate the global model
         eval_device = torch.device("cuda:0" if num_gpus > 0 else "cpu")
-        test_loss, accuracy = evaluate(global_model, test_loader, eval_device)
+        test_loss, accuracy = federated.evaluate(global_model, test_loader, eval_device)
         global_model.cpu()
 
         round_duration = time.time() - round_start_time
@@ -197,13 +182,38 @@ def main():
               f"Test Loss: {test_loss:.4f} | "
               f"Accuracy: {accuracy:6.2f}% | "
               f"Round Time: {round_duration:.2f}s")
+        
+        if config.CLIENT_EVAL:
+            # Log Client Metrics
+            losses = [m['loss'] for m in client_metrics]
+            accs = [m['accuracy'] for m in client_metrics]
+            local_losses = [m['local_loss'] for m in client_metrics]
+            local_accs = [m['local_accuracy'] for m in client_metrics]
+            
+            print("  - Client Global Accuracy: Min: {:.2f}%, Max: {:.2f}%, Mean: {:.2f}%".format(
+                np.min(accs), np.max(accs), np.mean(accs)))
+            print("  - Client Global Loss:     Min: {:.4f}, Max: {:.4f}, Mean: {:.4f}".format(
+                np.min(losses), np.max(losses), np.mean(losses)))
+                
+            print("  - Client Local Accuracy:  Min: {:.2f}%, Max: {:.2f}%, Mean: {:.2f}%".format(
+                np.min(local_accs), np.max(local_accs), np.mean(local_accs)))
+            print("  - Client Local Loss:      Min: {:.4f}, Max: {:.4f}, Mean: {:.4f}".format(
+                np.min(local_losses), np.max(local_losses), np.mean(local_losses)))
+
+            # Optional: Print detail for each client if not too many
+            print("  - Client Details:")
+            for i, m in enumerate(client_metrics):
+                print(f"    Client {i}: Acc: {m['accuracy']:6.2f}%, Loss: {m['loss']:.4f}")
+            print("  - Client Local Details:")
+            for i, m in enumerate(client_metrics):
+                print(f"    Client {i}: Local Acc: {m['local_accuracy']:6.2f}%, Local Loss: {m['local_loss']:.4f}")
 
     total_time = time.time() - start_time
     print(f"\nFederated Training finished in {total_time/60:.2f} minutes.")
     
     # Final Evaluation
     eval_device = torch.device("cuda:0" if num_gpus > 0 else "cpu")
-    final_loss, final_accuracy = evaluate(global_model, test_loader, eval_device)
+    final_loss, final_accuracy = federated.evaluate(global_model, test_loader, eval_device)
     print(f"\nFinal Global Model Performance:")
     print(f"  - Test Loss: {final_loss:.4f}")
     print(f"  - Accuracy: {final_accuracy:.2f}%")

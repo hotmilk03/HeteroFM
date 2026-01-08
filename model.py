@@ -9,15 +9,16 @@ import config
 # =============================================================================
 
 def init_param(m):
-    if isinstance(m, (nn.Conv2d, nn.Linear)):
-        nn.init.xavier_normal_(m.weight)
-        if m.bias is not None:
-            m.bias.data.zero_()
-    elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
-        if m.weight is not None:
-            m.weight.data.fill_(1)
-        if m.bias is not None:
-            m.bias.data.zero_()
+    pass
+    # if isinstance(m, (nn.Conv2d, nn.Linear)):
+    #     nn.init.xavier_normal_(m.weight)
+    #     if m.bias is not None:
+    #         m.bias.data.zero_()
+    # elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
+    #     if m.weight is not None:
+    #         m.weight.data.fill_(1)
+    #     if m.bias is not None:
+    #         m.bias.data.zero_()
 
 # =============================================================================
 # MLP Models (for MNIST)

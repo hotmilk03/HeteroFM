@@ -71,6 +71,8 @@ def vgg_permutation_spec() -> PermutationSpec:
         in_perm = out_perm
         perm_idx += 1
 
+    # VGG16으로 바꿀거면, 뒤에 dense layer 두 갠가 더 들어가니까 참고
+
     spec["classifier.weight"] = (None, in_perm)
     spec["classifier.bias"] = (None,)
         
@@ -243,7 +245,11 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
                 print(f"Iteration {iteration}/{p}: Improvement {new_L - old_L:.4f}")
 
             if new_L > old_L + 1e-12: # np.isclose(new_L, old_L)
+                # print("progress == TRUE !!")
                 progress = True
+            else:
+                pass
+                # print("**progress not permuted")
             
             perm[p] = new_perm_for_b
 

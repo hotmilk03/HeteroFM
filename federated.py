@@ -6,7 +6,28 @@ from model import init_model
 from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, vgg_permutation_spec, resnet50_permutation_spec, weight_matching, apply_permutation
 import config
 
-def client_update(client_loader, global_model_state, client_size_ratio, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device):
+def evaluate(model, test_loader, device):
+    """
+    Evaluates the model's performance on the test dataset.
+    """
+    model.to(device)
+    model.eval()
+    criterion = nn.CrossEntropyLoss(reduction='sum')
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            output = model(images)
+            test_loss += criterion(output, labels).item()
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(labels.view_as(pred)).sum().item()
+            
+    test_loss /= len(test_loader.dataset)
+    accuracy = 100. * correct / len(test_loader.dataset)
+    return test_loss, accuracy
+
+def client_update(client_loader, test_loader, local_test_loader, global_model_state, client_size_ratio, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device):
     # Create a local model with the client's specific size
     local_model = init_model(client_size_ratio, scaler_rate).to(device)
     local_model_state = local_model.state_dict()
@@ -49,7 +70,20 @@ def client_update(client_loader, global_model_state, client_size_ratio, scaler_r
             
             optimizer.step()
             
-    return local_model.cpu().state_dict(), client_size_ratio
+    # Evaluation on Global test_loader
+    global_test_loss, global_test_acc = evaluate(local_model, test_loader, device)
+
+    # Evaluation on Local test_loader (specific classes)
+    local_test_loss, local_test_acc = evaluate(local_model, local_test_loader, device)
+
+    metrics = {
+        'loss': global_test_loss,
+        'accuracy': global_test_acc,
+        'local_loss': local_test_loss,
+        'local_accuracy': local_test_acc
+    }
+
+    return local_model.cpu().state_dict(), client_size_ratio, metrics
 
 def aggregate_heterofl(global_model_state, client_contributions):
     """
@@ -143,7 +177,7 @@ def aggregate_rearrange(global_model_state, client_contributions):
                     print(f"Layer {key}: params_a shape = {params_a[key].shape}, params_b shape = {params_b[key].shape}")
         
         # Find the permutation that aligns params_b with params_a (the smallest model)
-        perm = weight_matching(
+        perm = weight_matching( # TODO (try) : change ref model from smallest model to mean of residual models & match until converges
             ps, 
             params_a, 
             params_b, 
@@ -154,7 +188,18 @@ def aggregate_rearrange(global_model_state, client_contributions):
         
         # Apply the permutation to params_b
         permuted_params_b = apply_permutation(ps, perm, params_b)
+
+        # print shape of permuted_params_b & params_b
+        # print(f"params_b shapes: {[params_b[k].shape for k in params_b]}")
+        # print(f"permuted_params_b shapes: {[permuted_params_b[k].shape for k in permuted_params_b]}")
         
+        if config.PERM_WARNING and all(torch.allclose(params_b[k], permuted_params_b[k]) for k in params_b):
+            print("Warning: Permutation did not change the parameters.")
+        else:
+            pass
+            # print("Permutation applied successfully.")
+            # print(f"perm: {perm}")
+
         permuted_client_contributions.append((permuted_params_b, client_size_ratio))
         # print(f"Finished rearranging client model with size {client_size}.")
 

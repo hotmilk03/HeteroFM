@@ -152,7 +152,32 @@ class Dataset:
         else:
             raise ValueError("Invalid data_split_mode in config.py. Choose 'iid' or 'non-iid'.")
 
+        # Create client-specific test loaders (Subset of test_dataset based on label_splits)
+        client_test_loaders = []
+        
+        # Get test labels
+        if hasattr(self.test_dataset, 'targets'):
+            test_labels = np.array(self.test_dataset.targets)
+        elif hasattr(self.test_dataset, 'samples'):
+            test_labels = np.array([s[1] for s in self.test_dataset.samples])
+        else:
+            # Fallback if targets/samples are not directly accessible (e.g. some custom datasets)
+            test_labels = np.array([y for _, y in self.test_dataset])
+
+        for i in range(num_clients):
+            target_labels = label_splits[i]
+            if not target_labels:
+                # Handle case with no assigned labels (empty list)
+                client_test_subset = Subset(self.test_dataset, [])
+            else:
+                # Find indices in test dataset that match the client's target labels
+                # Use np.isin for efficient matching
+                test_indices = np.where(np.isin(test_labels, target_labels))[0]
+                client_test_subset = Subset(self.test_dataset, test_indices)
+            
+            client_test_loaders.append(DataLoader(client_test_subset, batch_size=batch_size, shuffle=False, num_workers=config.NUM_WORKERS))
+
         # Create a single test loader (common for all clients)
         test_loader = DataLoader(self.test_dataset, batch_size=batch_size, shuffle=False, num_workers=config.NUM_WORKERS)
         print("Data preparation complete.")
-        return client_loaders, test_loader, label_splits
+        return client_loaders, client_test_loaders, test_loader, label_splits
