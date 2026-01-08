@@ -229,21 +229,16 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
             # --- Update permutation for model b ---
             new_perm_for_b = perm[p].clone()
             
-            if match_mode == 'C':
-                # The old permutation maps the first size_a indices of b to some other indices.
-                old_L = cost_matrix[torch.arange(size_a), perm[p][:size_a]].sum()
-                # Reorder the chosen 'ci' neurons to come first, aligned with 'ri'
-                sorted_ci = torch.from_numpy(ci[np.argsort(ri)]).long()
-                unmatched_b_indices = torch.tensor([i for i in range(size_b) if i not in sorted_ci], dtype=torch.long)
-                new_perm_for_b = torch.cat([sorted_ci, unmatched_b_indices])
+            # The old permutation maps the first size_a indices of b to some other indices.
+            old_L = cost_matrix[torch.arange(size_a), perm[p][:size_a]].sum()
 
-            elif match_mode == 'E':
-                old_L = torch.diag(cost_matrix[:, perm[p]]).sum()
-                # The assignment is a full permutation of size_b
-                new_perm_for_b = torch.from_numpy(ci[np.argsort(ri)]).long()
+            # Reorder the chosen 'ci' neurons to come first, aligned with 'ri'
+            sorted_ci = torch.from_numpy(ci[np.argsort(ri)]).long()
+            unmatched_b_indices = torch.tensor([i for i in range(size_b) if i not in sorted_ci], dtype=torch.long)
+            new_perm_for_b = torch.cat([sorted_ci, unmatched_b_indices])
 
             new_L = cost_matrix[ri, ci].sum()
-            
+
             if not silent:
                 print(f"Iteration {iteration}/{p}: Improvement {new_L - old_L:.4f}")
 
