@@ -115,8 +115,30 @@ class Dataset:
             class_shards = {i: [] for i in range(num_classes)}
             for i in range(num_classes):
                 np.random.shuffle(idx_by_class[i])
-                split_points = np.array_split(idx_by_class[i], shards_per_class)
-                class_shards[i] = [sp.tolist() for sp in split_points]
+
+                if not config.DYNAMIC_ON_NON_IID_SPLIT:
+                    # Static split: equal shards
+                    split_points = np.array_split(idx_by_class[i], shards_per_class)
+                    class_shards[i] = [sp.tolist() for sp in split_points]
+                else:
+                    # Dynamic split: 1:4 ratio
+                    total_samples = len(idx_by_class[i])
+                    weights = np.random.uniform(1, 4, shards_per_class)
+                    weights /= weights.sum()
+                    sizes = (total_samples * weights).astype(int)
+                    
+                    # Distribute remainder
+                    remainder = total_samples - sizes.sum()
+                    for j in range(remainder):
+                        sizes[j] += 1
+                    
+                    # Create shards
+                    start = 0
+                    shards = []
+                    for size in sizes:
+                        shards.append(idx_by_class[i][start : start + size].tolist())
+                        start += size
+                    class_shards[i] = shards
             
             client_indices_map = {i: [] for i in range(num_clients)}
             label_splits = {}
@@ -171,7 +193,6 @@ class Dataset:
                 client_test_subset = Subset(self.test_dataset, [])
             else:
                 # Find indices in test dataset that match the client's target labels
-                # Use np.isin for efficient matching
                 test_indices = np.where(np.isin(test_labels, target_labels))[0]
                 client_test_subset = Subset(self.test_dataset, test_indices)
             

@@ -49,6 +49,7 @@ DATA_SET = model_to_dataset[MODEL] # 'mnist', 'cifar10', 'imagenet'
 BATCH_SIZE = 32
 DATA_DIR = './data'
 DATA_SPLIT_MODE = 'non-iid' # Data split mode. 'iid' or 'non-iid'.
+DYNAMIC_ON_NON_IID_SPLIT = True
 
 # Number of classes assigned to each client in the non-iid setting.
 # This value is a ratio of the total number of classes.
