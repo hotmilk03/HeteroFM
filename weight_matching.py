@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from scipy.optimize import linear_sum_assignment
 import config
+from sinkhorn import Sinkhorn
 
 class PermutationSpec(NamedTuple):
     perm_to_axes: dict
@@ -130,7 +131,30 @@ def get_permuted_param(ps: PermutationSpec, perm, k: str, params, except_axis=No
         if axis == except_axis:
             continue
         if p is not None:
-            w = torch.index_select(w, axis, perm[p])
+            # Handle both hard permutations (LongTensor) and soft permutations (FloatTensor)
+            perm_p = perm[p]
+            if perm_p.dtype in [torch.long, torch.int, torch.int32, torch.int64]:
+                # Hard permutation: use index_select
+                w = torch.index_select(w, axis, perm_p)
+            else:
+                # Soft permutation: use matrix multiplication
+                # Move the axis to position 0, apply soft perm, move back
+                w = w.movedim(axis, 0)
+                original_shape = w.shape
+                w_flat = w.reshape(original_shape[0], -1)
+                
+                # Apply soft permutation: perm_p @ w_flat
+                if perm_p.shape[1] == w_flat.shape[0]:
+                    w_flat = perm_p @ w_flat
+                else:
+                    # Handle size mismatch
+                    min_size = min(perm_p.shape[1], w_flat.shape[0])
+                    w_flat = perm_p[:, :min_size] @ w_flat[:min_size, :]
+                
+                # Reshape back
+                new_shape = (w_flat.shape[0],) + original_shape[1:]
+                w = w_flat.reshape(new_shape)
+                w = w.movedim(0, axis)
     return w
 
 def apply_permutation(ps: PermutationSpec, perm, params):
@@ -153,6 +177,21 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
     perm_sizes_b = {p: params_b[axes[0][0]].shape[axes[0][1]] for p, axes in ps.perm_to_axes.items()} # P_0 : size of {layer.1.weight, axis 0}
     perm = {p: torch.arange(n) for p, n in perm_sizes_b.items()} if init_perm is None else init_perm
     perm_names = list(perm.keys()) # [P_0, P_1, ...]
+
+    # Gradient Descent mode with Sinkhorn
+    if config.SINKHORN:
+        return _weight_matching_sinkhorn(
+            ps,
+            params_a,
+            params_b,
+            permute_mode,
+            match_mode,
+            perm_sizes_b,
+            perm_names,
+            max_iter,
+            init_perm,
+            silent
+        )
 
     for iteration in range(max_iter):
         progress = False
@@ -257,6 +296,144 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
             break
             
     return perm
+
+def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_mode, match_mode,
+                            perm_sizes_b, perm_names, max_iter, init_perm, silent):
+    """
+    Gradient Descent based weight matching using Sinkhorn for soft permutations.
+    Optimizes soft permutation matrices by minimizing alignment loss.
+    """
+    # Initialize learnable permutation matrices
+    P_matrices = {}
+    size_a_dict = {}
+    
+    for p in perm_names:
+        size_a = params_a[ps.perm_to_axes[p][0][0]].shape[ps.perm_to_axes[p][0][1]]
+        size_b = perm_sizes_b[p]
+        size_a_dict[p] = size_a
+        
+        # Initialize with identity-like soft matrix (larger noise for better gradient flow)
+        if size_a == size_b:
+            P_init = torch.eye(size_a, dtype=torch.float32) + torch.randn(size_a, size_b) * 0.1
+        else:
+            # For heterogeneous sizes: create block-diagonal identity-like matrix
+            P_init = torch.zeros(size_a, size_b, dtype=torch.float32)
+            min_size = min(size_a, size_b)
+            # Initialize block diagonal with identity + noise (symmnet approach)
+            P_init[:min_size, :min_size] = torch.eye(min_size, dtype=torch.float32) + torch.randn(min_size, min_size) * 0.1
+        
+        P_matrices[p] = torch.nn.Parameter(P_init, requires_grad=True)
+    
+    # Optimizer for permutation matrices
+    lr = getattr(config, "SINKHORN_LR", 0.1)
+    optimizer = torch.optim.Adam(P_matrices.values(), lr=lr)
+    
+    num_sink = getattr(config, "SINKHORN_NUM_ITER", 50)
+    lambd_sink = getattr(config, "SINKHORN_LAMBDA", 0.1)
+    
+    for iteration in range(max_iter):
+        optimizer.zero_grad()
+        
+        # Apply Sinkhorn to get soft permutations
+        soft_perms = {}
+        l = getattr(config, "SINKHORN_SCALING", 1.0)  # Cost scaling factor (matches symmnet: self.l)
+        
+        for p in perm_names:
+            size_a = size_a_dict[p]
+            size_b = perm_sizes_b[p]
+            
+            # Cost matrix: scale by lambda (matches symmnet.py: -self.p[i] * self.l)
+            c = -P_matrices[p] * l
+            # Marginals: unnormalized ones to match symmnet.py
+            # In Sinkhorn.forward: log_a = log(a), so uniform prior with log(1) = 0
+            a = torch.ones(size_a, dtype=torch.float32)
+            b = torch.ones(size_b, dtype=torch.float32)
+            
+            soft_perms[p] = Sinkhorn.apply(c, a, b, num_sink, lambd_sink)
+        
+        # Compute alignment loss using soft permutations
+        total_loss = torch.tensor(0.0, dtype=torch.float32, requires_grad=True)        
+        
+        for p in perm_names:
+            for wk, axis in ps.perm_to_axes[p]:
+                w_a = params_a[wk].detach().clone()
+                w_b_permuted = get_permuted_param(ps, soft_perms, wk, params_b, except_axis=axis)
+                
+                # Define valid region slice: keep 'axis' full, crop others to A's size
+                slices = [slice(0, w_a.shape[d]) if d != axis else slice(None) for d in range(w_a.ndim)]
+                
+                if match_mode == 'C':
+                    # Cut B to match A's dimensions
+                    w_b_permuted = w_b_permuted[tuple(slices)]
+                elif match_mode == 'E':
+                    # Prepare target shape: A's size on 'axis', B's size on others
+                    target_shape = list(w_b_permuted.shape)
+                    target_shape[axis] = w_a.shape[axis]
+                    
+                    if permute_mode == 'M':
+                        # Init with B's values (crop 'axis' to match A)
+                        axis_subset = [slice(None)] * w_a.ndim
+                        axis_subset[axis] = slice(0, w_a.shape[axis])
+                        w_a_new = w_b_permuted[tuple(axis_subset)].clone()
+                    elif permute_mode == 'Z':
+                        # Init with zeros
+                        w_a_new = torch.zeros(target_shape, dtype=w_a.dtype, device=w_a.device)
+                    
+                    # Inject A into the valid region
+                    w_a_new[tuple(slices)] = w_a
+                    w_a = w_a_new
+                
+                # Align axes for dot product - same as original weight_matching
+                w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
+                w_b_flat = w_b_permuted.movedim(axis, 0).reshape(w_b_permuted.shape[axis], -1)
+                
+                # Compute similarity matrix (not scalar!) for proper gradient flow
+                # This creates a (size_a, size_b) matrix where each entry is similarity between neuron pairs
+                similarity_matrix = w_a_flat @ w_b_flat.T
+                
+                # Compute alignment loss using soft permutation
+                P_soft = soft_perms[p]
+                
+                if permute_mode == 'M':
+                    # Maximize alignment: -trace(P^T @ similarity_matrix)
+                    # This encourages P to assign high weights to high similarity pairs
+                    alignment = torch.sum(P_soft * similarity_matrix)
+                    total_loss = total_loss - alignment
+                elif permute_mode == 'Z':
+                    # For zero-padding mode, minimize absolute difference
+                    # Use Frobenius norm weighted by P
+                    diff_matrix = torch.abs(similarity_matrix)
+                    total_loss = total_loss + torch.sum(P_soft * diff_matrix)
+        
+        # Backward and optimize
+        if total_loss.requires_grad:
+            total_loss.backward()
+            optimizer.step()
+        
+        if not silent and iteration % 10 == 0:
+            print(f"GD Iteration {iteration}: Loss {total_loss.item():.4f}")
+        
+        # Early stopping if loss is very small
+        if total_loss.item() < 1e-6:
+            break
+    
+    # Convert final soft permutations to hard permutations
+    final_perm = {}
+    for p in perm_names:
+        with torch.no_grad():
+            size_a = size_a_dict[p]
+            size_b = perm_sizes_b[p]
+            c = -P_matrices[p]
+            a = torch.ones(size_a, dtype=torch.float32) / size_a
+            b = torch.ones(size_b, dtype=torch.float32) / size_b
+            P_soft = Sinkhorn.apply(c, a, b, num_sink, lambd_sink)
+            
+            ri, ci = linear_sum_assignment(P_soft.detach().cpu().numpy(), maximize=True)
+            sorted_ci = torch.from_numpy(ci[np.argsort(ri)]).long()
+            unmatched_b_indices = torch.tensor([i for i in range(size_b) if i not in sorted_ci], dtype=torch.long)
+            final_perm[p] = torch.cat([sorted_ci, unmatched_b_indices])
+    
+    return final_perm
 
 def get_model_params_as_dict(model):
     """Converts a PyTorch model's state_dict to a flattened dictionary."""

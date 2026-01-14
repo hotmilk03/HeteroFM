@@ -204,7 +204,8 @@ def init_model(w, scaler_rate=1.0):
     elif config.DATA_SET == 'cifar10':
         in_channels, num_classes = 3, 10
     elif config.DATA_SET == 'imagenet':
-        in_channels, num_classes = 3, 1000
+        in_channels = 3
+        num_classes = int(1000 * config.IMAGENET_SUBSET_RATIO)
     else:
         raise ValueError(f"Unknown dataset: {config.DATA_SET}")
 
@@ -215,7 +216,7 @@ def init_model(w, scaler_rate=1.0):
         model = MLP3(w, scaler_rate, False, in_channels, num_classes)
     elif config.MODEL == 'vgg':
         model = VGG('VGG11', w, scaler_rate, False, in_channels, num_classes)
-    elif config.MODEL == 'resnet':
+    elif config.MODEL == 'resnet50':
         model = ResNet50(w, scaler_rate, False, in_channels, num_classes)
     else:
         raise ValueError(f"Unknown model: {config.MODEL}")

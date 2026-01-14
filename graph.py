@@ -107,6 +107,18 @@ def parse_log_and_plot(file_paths, label_names, title, output_image):
 log_filenames = [
     '0) vgg-100-40-noniid-static-1-0.01-HeteroFL-diffsize.log',
     '0) vgg-100-40-noniid-static-1-0.01-ME-diffsize.log',
+
+    # '1) vgg-100-40-noniid-static-1-0.1-HeteroFL-diffsize.log',
+    # '1) vgg-100-40-noniid-static-1-0.1-ME-diffsize.log',
+
+    # '2) vgg-100-40-noniid-static-1-0.1-HeteroFL-samesize.log',
+    # '2) vgg-100-40-noniid-static-1-0.1-ME-samesize.log',
+
+    # '3) vgg-100-40-noniid-dynamic-1-0.1-HeteroFL-diffsize.log',
+    # '3) vgg-100-40-noniid-dynamic-1-0.1-ME-diffsize.log',
+
+    # '4) vgg-100-40-noniid-dynamic-1-0.1-HeteroFL-samesize.log',
+    # '4) vgg-100-40-noniid-dynamic-1-0.1-ME-samesize.log',
 ]
 label_names = [
     'HeteroFL',
@@ -115,4 +127,12 @@ label_names = [
 
 output_image = '0) vgg-100-40-noniid-static-1-0.01-diffsize(HeteroFL vs ME).png'
 title = 'VGG(40 epoch, 0.01 lr, noniid static split, diffsize) : HeteroFL vs ME'
+# output_image = '1) vgg-100-40-noniid-static-1-0.1-diffsize(HeteroFL vs ME).png'
+# title = 'VGG(40 epoch, 0.1 lr, noniid static split, diffsize) : HeteroFL vs ME'
+# output_image = '2) vgg-100-40-noniid-static-1-0.1-samesize(HeteroFL vs ME).png'
+# title = 'VGG(40 epoch, 0.1 lr, noniid static split, samesize) : HeteroFL vs ME'
+# output_image = '3) vgg-100-40-noniid-dynamic-1-0.1-diffsize(HeteroFL vs ME).png'
+# title = 'VGG(40 epoch, 0.1 lr, noniid dynamic split, diffsize) : HeteroFL vs ME'
+# output_image = '4) vgg-100-40-noniid-dynamic-1-0.1-samesize(HeteroFL vs ME).png'
+# title = 'VGG(40 epoch, 0.1 lr, noniid dynamic split, samesize) : HeteroFL vs ME'
 parse_log_and_plot(log_filenames, label_names, title, output_image)

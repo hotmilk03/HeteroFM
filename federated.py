@@ -85,7 +85,7 @@ def client_update(client_loader, test_loader, local_test_loader, global_model_st
 
     return local_model.cpu().state_dict(), client_size_ratio, metrics
 
-def aggregate_heterofl(global_model_state, client_contributions):
+def aggregate_heterofl(global_model_state, client_contributions, device='cpu'):
     """
     Aggregates heterogeneous client models into the global model using the HeteroFL logic.
     It averages the weights of the sub-models on the corresponding parts of the global model.
@@ -94,13 +94,14 @@ def aggregate_heterofl(global_model_state, client_contributions):
     agg_state = copy.deepcopy(global_model_state)
     count_state = copy.deepcopy(global_model_state)
     for key in agg_state:
-        agg_state[key] = torch.zeros_like(agg_state[key], dtype=torch.float32)
-        count_state[key] = torch.zeros_like(count_state[key], dtype=torch.float32)
+        agg_state[key] = torch.zeros_like(agg_state[key], dtype=torch.float32).to(device)
+        count_state[key] = torch.zeros_like(count_state[key], dtype=torch.float32).to(device)
         
     # Sum up all client model contributions to the appropriate slices
     for client_state, _ in client_contributions:
         for key, client_param in client_state.items():
             if key in agg_state:
+                client_param = client_param.to(device)
                 slices = [slice(0, dim) for dim in client_param.shape]
 
                 agg_state[key][tuple(slices)] += client_param
@@ -115,11 +116,11 @@ def aggregate_heterofl(global_model_state, client_contributions):
             count_state[key] > 0,
             agg_state[key] / count_state[key],
             new_global_state[key]
-        )
+        ).cpu()
         
     return new_global_state
 
-def aggregate_rearrange(global_model_state, client_contributions):
+def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
     """
     Aggregates heterogeneous client models by first finding a permutation to align neurons
     and then averaging. The reference model for permutation is the one with the smallest client size.
@@ -148,7 +149,7 @@ def aggregate_rearrange(global_model_state, client_contributions):
         ps = mlp3_permutation_spec()
     elif config.MODEL == 'vgg':
         ps = vgg_permutation_spec()
-    elif config.MODEL == 'resnet':
+    elif config.MODEL == 'resnet50':
         ps = resnet50_permutation_spec()
     else:
         raise ValueError(f"No permutation spec defined for model: {config.MODEL}")
@@ -177,7 +178,7 @@ def aggregate_rearrange(global_model_state, client_contributions):
                     print(f"Layer {key}: params_a shape = {params_a[key].shape}, params_b shape = {params_b[key].shape}")
         
         # Find the permutation that aligns params_b with params_a (the smallest model)
-        perm = weight_matching( # TODO (try) : change ref model from smallest model to mean of residual models & match until converges
+        perm = weight_matching(
             ps, 
             params_a, 
             params_b, 
@@ -203,18 +204,18 @@ def aggregate_rearrange(global_model_state, client_contributions):
         permuted_client_contributions.append((permuted_params_b, client_size_ratio))
         # print(f"Finished rearranging client model with size {client_size}.")
 
-    # 2. Aggregate the permuted models
-    # Create a zero-initialized state for aggregation and a counter
+    # 2. Aggregate the permuted models on GPU
     agg_state = copy.deepcopy(global_model_state)
     count_state = copy.deepcopy(global_model_state)
     for key in agg_state:
-        agg_state[key] = torch.zeros_like(agg_state[key], dtype=torch.float32)
-        count_state[key] = torch.zeros_like(count_state[key], dtype=torch.float32)
+        agg_state[key] = torch.zeros_like(agg_state[key], dtype=torch.float32).to(device)
+        count_state[key] = torch.zeros_like(count_state[key], dtype=torch.float32).to(device)
 
     # Sum up all permuted client model contributions
     for client_state, _ in permuted_client_contributions:
         for key, client_param in client_state.items():
             if key in agg_state:
+                client_param = client_param.to(device)
                 slices = [slice(0, min(client_dim, agg_dim)) for client_dim, agg_dim in zip(client_param.shape, agg_state[key].shape)]
                 agg_state[key][tuple(slices)] += client_param[tuple(slices)]
                 count_state[key][tuple(slices)] += 1
@@ -227,6 +228,6 @@ def aggregate_rearrange(global_model_state, client_contributions):
             count_state[key] > 0,
             agg_state[key] / count_state[key],
             new_global_state[key]
-        )
+        ).cpu()
         
     return new_global_state
