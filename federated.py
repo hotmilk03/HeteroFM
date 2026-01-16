@@ -31,6 +31,8 @@ def client_update(client_loader, test_loader, local_test_loader, global_model_st
     # Create a local model with the client's specific size
     local_model = init_model(client_size_ratio, scaler_rate).to(device)
     local_model_state = local_model.state_dict()
+    use_amp = bool(config.USE_AMP) and device.type == 'cuda'
+    scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     
     # Slice the global model's state to fit the local model
     for key in local_model_state:
@@ -46,44 +48,64 @@ def client_update(client_loader, test_loader, local_test_loader, global_model_st
     
     local_model.load_state_dict(local_model_state)
     
-    # Standard training loop
-    local_model.train()
     optimizer = optim.SGD(local_model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
-    
-    for _ in range(local_epochs):
-        for data, target in client_loader:
-            data, target = data.to(device), target.to(device)
-            optimizer.zero_grad()
-            output = local_model(data)
 
-            if use_masked_loss and label_split is not None:
-                mask = torch.full_like(output, -float('inf'))
-                mask[:, label_split] = 0.0
-                output = output + mask
+    # Standard training loop
+    local_model.train()
 
-            loss = criterion(output, target)
-            loss.backward()
+    try:
+        for _ in range(local_epochs):
+            for data, target in client_loader:
+                data = data.to(device, non_blocking=True)
+                target = target.to(device, non_blocking=True)
+                optimizer.zero_grad(set_to_none=True)
 
-            if grad_clip_norm > 0:
-                torch.nn.utils.clip_grad_norm_(local_model.parameters(), grad_clip_norm)
-            
-            optimizer.step()
-            
-    # Evaluation on Global test_loader
-    global_test_loss, global_test_acc = evaluate(local_model, test_loader, device)
+                with torch.amp.autocast('cuda', enabled=use_amp):
+                    output = local_model(data)
 
-    # Evaluation on Local test_loader (specific classes)
-    local_test_loss, local_test_acc = evaluate(local_model, local_test_loader, device)
+                    if use_masked_loss and label_split is not None:
+                        mask = torch.full_like(output, -float('inf'))
+                        mask[:, label_split] = 0.0
+                        output = output + mask
 
-    metrics = {
-        'loss': global_test_loss,
-        'accuracy': global_test_acc,
-        'local_loss': local_test_loss,
-        'local_accuracy': local_test_acc
-    }
+                    loss = criterion(output, target)
 
-    return local_model.cpu().state_dict(), client_size_ratio, metrics
+                scaler.scale(loss).backward()
+
+                if grad_clip_norm > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(local_model.parameters(), grad_clip_norm)
+                
+                scaler.step(optimizer)
+                scaler.update()
+
+        # Evaluation on Global test_loader
+        global_test_loss, global_test_acc = evaluate(local_model, test_loader, device)
+
+        # Evaluation on Local test_loader (specific classes)
+        local_test_loss, local_test_acc = evaluate(local_model, local_test_loader, device)
+
+        metrics = {
+            'loss': global_test_loss,
+            'accuracy': global_test_acc,
+            'local_loss': local_test_loss,
+            'local_accuracy': local_test_acc
+        }
+
+        # Move weights back to CPU before freeing CUDA memory
+        final_state_dict = local_model.cpu().state_dict()
+
+    finally:
+        # Ensure optimizer/memory cleanup even on error
+        del local_model
+        del optimizer
+        del criterion
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+    return final_state_dict, client_size_ratio, metrics
 
 def aggregate_heterofl(global_model_state, client_contributions, device='cpu'):
     """
@@ -115,7 +137,7 @@ def aggregate_heterofl(global_model_state, client_contributions, device='cpu'):
         new_global_state[key] = torch.where(
             count_state[key] > 0,
             agg_state[key] / count_state[key],
-            new_global_state[key]
+            new_global_state[key].to(device)
         ).cpu()
         
     return new_global_state
@@ -147,7 +169,7 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
         ps = mlp2_permutation_spec()
     elif config.MODEL == 'mlp3':
         ps = mlp3_permutation_spec()
-    elif config.MODEL == 'vgg':
+    elif config.MODEL == 'vgg11':
         ps = vgg_permutation_spec()
     elif config.MODEL == 'resnet50':
         ps = resnet50_permutation_spec()
@@ -227,7 +249,7 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
         new_global_state[key] = torch.where(
             count_state[key] > 0,
             agg_state[key] / count_state[key],
-            new_global_state[key]
+            new_global_state[key].to(device)
         ).cpu()
         
     return new_global_state

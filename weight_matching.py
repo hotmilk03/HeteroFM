@@ -72,7 +72,7 @@ def vgg_permutation_spec() -> PermutationSpec:
         in_perm = out_perm
         perm_idx += 1
 
-    # VGG16으로 바꿀거면, 뒤에 dense layer 두 갠가 더 들어가니까 참고
+    # If switching to VGG16, note that two additional dense layers are added at the end
 
     spec["classifier.weight"] = (None, in_perm)
     spec["classifier.bias"] = (None,)

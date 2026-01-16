@@ -214,7 +214,7 @@ def init_model(w, scaler_rate=1.0):
         model = MLP2(w, scaler_rate, False, in_channels, num_classes)
     elif config.MODEL == 'mlp3':
         model = MLP3(w, scaler_rate, False, in_channels, num_classes)
-    elif config.MODEL == 'vgg':
+    elif config.MODEL == 'vgg11':
         model = VGG('VGG11', w, scaler_rate, False, in_channels, num_classes)
     elif config.MODEL == 'resnet50':
         model = ResNet50(w, scaler_rate, False, in_channels, num_classes)

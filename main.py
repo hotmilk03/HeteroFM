@@ -8,11 +8,15 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 import numpy as np
+import pickle
 
 import config
 import data
 import federated
 import model
+
+# Reduce CUDA memory fragmentation if the env var is unset.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 def _init_distributed():
     """Initialize torch.distributed from SLURM or torchrun envs if available."""
@@ -21,6 +25,9 @@ def _init_distributed():
         rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", 0)))
         world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", 1)))
         local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID", 0)))
+
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
 
         # Master addr/port
         master_addr = os.environ.get("MASTER_ADDR")
@@ -35,7 +42,17 @@ def _init_distributed():
         os.environ.setdefault("MASTER_PORT", master_port)
 
         backend = "nccl" if torch.cuda.is_available() else "gloo"
-        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+
+        print(f"[Rank {rank}] Master: {master_addr}:{master_port}, World Size: {world_size}")
+        
+        dist.init_process_group(
+            backend=backend, 
+            rank=rank, 
+            world_size=world_size,
+            device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None
+        )
+        
+        print(f"[Rank {rank}] Process group initialized successfully")
 
         # Set device to local_rank if CUDA
         if torch.cuda.is_available():
@@ -47,6 +64,8 @@ def _init_distributed():
 def run_client_gpu(args):
     client_id, gpu_index, global_state, client_loader, test_loader, client_test_loader, client_size_ratio, scaler_rate, label_split, use_masked_loss, learning_rate, momentum, weight_decay, grad_clip_norm = args
     device = torch.device(f'cuda:{gpu_index}')
+    if torch.cuda.is_available():
+        torch.cuda.set_device(device)
 
     try:
         client_state, size_ratio, metrics = federated.client_update(
@@ -72,14 +91,23 @@ def run_client_gpu(args):
         traceback.print_exc()
         raise
 
-def main():
-    print("Starting HeteroFM Experiment...")
+    finally:
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+def print_info(label_splits):
+    print("=== HeteroFM Configuration ===")
     print("=================================")
     print(f"  - Model: {config.MODEL}")
     print(f"  - Dataset: {config.DATA_SET}")
+    if config.MODEL == 'resnet50':
+        print(f"    - ImageNet Subset Ratio: {config.IMAGENET_SUBSET_RATIO}")
     print(f"  - Data Split: {config.DATA_SPLIT_MODE}")
     if config.DATA_SPLIT_MODE == 'non-iid':
         print(f"    - Dynamic Split: {config.DYNAMIC_ON_NON_IID_SPLIT}")
+    print(f"  - Batch Size: {config.BATCH_SIZE}")
+    print(f"  - Number of Workers: {config.NUM_WORKERS}")
     print(f"  - Number of Clients: {config.NUM_CLIENTS}")
     print(f"  - Client Hidden Sizes Ratio: {config.W_CLIENT}")
     print(f"  - Classes per Client Ratio: {config.NON_IID_CLASSES_RATIO_PER_CLIENT}")
@@ -99,17 +127,132 @@ def main():
     print(f"  - Learning Rate: {config.LEARNING_RATE}")
     print("=================================\n")
 
+    if config.DATA_SPLIT_MODE == 'non-iid' and config.MODEL in ['mlp2', 'mlp3', 'vgg11']:
+        print("\n--- Non-IID Label Distribution ---")
+        print(f"  - Classes per Client Ratio: {config.NON_IID_CLASSES_RATIO_PER_CLIENT}")
+        for client_id, labels in label_splits.items():
+            print(f"    - Client {client_id}: Classes {sorted(labels)}")
+        print("----------------------------------\n")
+
+def parse_args():
+    """Parse command line arguments to override config values"""
+    import argparse
+    parser = argparse.ArgumentParser(description='HeteroFM Federated Learning')
+    
+    # Model parameters
+    parser.add_argument('--model', type=str, default=None, choices=['mlp2', 'mlp3', 'vgg11', 'resnet50'],
+                        help='Model architecture')
+    parser.add_argument('--w-client', type=str, default=None,
+                        help='Client width ratios (comma-separated, e.g., "1,1,0.5,0.5")')
+    
+    # Training parameters
+    parser.add_argument('--rounds', type=int, default=None,
+                        help='Number of communication rounds')
+    parser.add_argument('--local-epochs', type=int, default=None,
+                        help='Number of local epochs per round')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='Learning rate')
+    parser.add_argument('--batch-size', type=int, default=None,
+                        help='Batch size')
+    parser.add_argument('--grad-clip', type=float, default=None,
+                        help='Gradient clipping norm')
+    
+    # Data parameters
+    parser.add_argument('--data-split', type=str, default=None, choices=['iid', 'non-iid'],
+                        help='Data split mode')
+    parser.add_argument('--non-iid-ratio', type=float, default=None,
+                        help='Classes ratio per client in non-iid setting')
+    parser.add_argument('--imagenet-subset', type=float, default=None,
+                        help='ImageNet subset ratio')
+    
+    # Aggregation parameters
+    parser.add_argument('--rearrange', action='store_true', default=None,
+                        help='Use rearrangement aggregation')
+    parser.add_argument('--no-rearrange', action='store_false', dest='rearrange',
+                        help='Use HeteroFL aggregation')
+    parser.add_argument('--permute', type=str, default=None, choices=['Z', 'M'],
+                        help='Permutation mode')
+    parser.add_argument('--match', type=str, default=None, choices=['C', 'E'],
+                        help='Match mode')
+    parser.add_argument('--sinkhorn', action='store_true', default=None,
+                        help='Enable Sinkhorn')
+    parser.add_argument('--no-sinkhorn', action='store_false', dest='sinkhorn',
+                        help='Disable Sinkhorn')
+    
+    args = parser.parse_args()
+    return args
+
+def apply_args_to_config(args):
+    """Override config values with command line arguments"""
+    if args.model is not None:
+        config.MODEL = args.model
+        # Update dataset accordingly
+        model_to_dataset = {
+            'mlp2': 'mnist',
+            'mlp3': 'mnist',
+            'vgg11': 'cifar10',
+            'resnet50': 'imagenet'
+        }
+        config.DATA_SET = model_to_dataset[config.MODEL]
+    
+    if args.w_client is not None:
+        w_values = [float(x.strip()) for x in args.w_client.split(',')]
+        config.W_CLIENT = w_values
+        config.NUM_CLIENTS = len(w_values)
+        config.MAX_W = max(w_values)
+        config.MIN_W = min(w_values)
+    
+    if args.rounds is not None:
+        config.COMMUNICATION_ROUNDS = args.rounds
+    
+    if args.local_epochs is not None:
+        config.LOCAL_EPOCHS = args.local_epochs
+    
+    if args.lr is not None:
+        config.LEARNING_RATE = args.lr
+    
+    if args.batch_size is not None:
+        config.BATCH_SIZE = args.batch_size
+    
+    if args.grad_clip is not None:
+        config.GRAD_CLIP_NORM = args.grad_clip
+    
+    if args.data_split is not None:
+        config.DATA_SPLIT_MODE = args.data_split
+    
+    if args.non_iid_ratio is not None:
+        config.NON_IID_CLASSES_RATIO_PER_CLIENT = args.non_iid_ratio
+    
+    if args.imagenet_subset is not None:
+        config.IMAGENET_SUBSET_RATIO = args.imagenet_subset
+    
+    if args.rearrange is not None:
+        config.REARRANGE = args.rearrange
+    
+    if args.permute is not None:
+        config.PERMUTE = args.permute
+    
+    if args.match is not None:
+        config.MATCH = args.match
+    
+    if args.sinkhorn is not None:
+        config.SINKHORN = args.sinkhorn
+
+def main():
+    # Parse command line arguments and override config
+    args = parse_args()
+    apply_args_to_config(args)
+    
     # setup
     torch.backends.cudnn.benchmark = True
     is_dist, rank, world_size, local_rank = _init_distributed()
     num_gpus = torch.cuda.device_count()
     if is_dist:
-        # In distributed mode, each process uses its local GPU
-        print(f"[Rank {rank}] World Size: {world_size}, Local Rank: {local_rank}")
-        num_gpus = 1  # per-process
+        # In distributed mode, each process can use multiple local GPUs
+        print(f"[Rank {rank}/{world_size}] Local GPUs: {num_gpus}")
     print(f"Number of available GPUs (visible to this process): {num_gpus}\n")
 
-    server_device = torch.device("cpu")
+    server_device = torch.device("cpu") # TODO : move to gpu
     if config.REARRANGE:
         if config.MATCH == 'C':
             global_model = model.init_model(config.MIN_W).to(server_device)
@@ -128,22 +271,56 @@ def main():
         gamma=config.LR_DECAY_GAMMA
     )
 
-    # data
-    dataset = data.Dataset(config.DATA_SET, config.DATA_DIR, config.DATA_DIR_IMAGENET)
-    client_loaders, client_test_loaders,test_loader, label_splits = dataset.prepare_data(
-        config.NUM_CLIENTS, 
-        config.BATCH_SIZE,
-        config.DATA_SPLIT_MODE,
-        config.NON_IID_CLASSES_RATIO_PER_CLIENT
-    )
+    # Data preparation
+    if is_dist:
+        # Distributed mode: rank 0 computes indices, broadcast to all ranks
+        print(f"[Rank {rank}] Preparing data in distributed mode...")
+        
+        # All ranks create dataset instance (lightweight)
+        dataset = data.Dataset(config.DATA_SET, config.DATA_DIR)
+        
+        # Rank 0 computes client indices, then broadcast to all
+        if rank == 0:
+            client_indices_map, label_splits = dataset.compute_client_indices(
+                num_clients=config.NUM_CLIENTS,
+                data_split_mode=config.DATA_SPLIT_MODE,
+                n_classes_ratio=config.NON_IID_CLASSES_RATIO_PER_CLIENT
+            )
+            data_split_info = [{'indices': client_indices_map, 'labels': label_splits}]
+            print(f"[Rank 0] Broadcasting client indices to all ranks...")
+        else:
+            data_split_info = [None]
+        
+        # Broadcast indices to all ranks (much faster than file I/O)
+        dist.broadcast_object_list(data_split_info, src=0)
+        client_indices_map = data_split_info[0]['indices']
+        label_splits = data_split_info[0]['labels']
+        
+        # Each rank determines its assigned clients
+        assigned_clients = [i for i in range(config.NUM_CLIENTS) if (i % world_size) == rank]
+        print(f"[Rank {rank}] Creating DataLoaders for assigned clients {assigned_clients}...")
+        
+        # Each rank creates DataLoaders ONLY for its assigned clients
+        client_loaders, client_test_loaders, test_loader = dataset.create_dataloaders(
+            client_indices_map=client_indices_map,
+            label_splits=label_splits,
+            batch_size=config.BATCH_SIZE,
+            client_ids=assigned_clients
+        )
+        
+        # Sync before proceeding
+        dist.barrier()
+    else:
+        # Single process mode
+        print("Preparing data on single process...")
+        dataset = data.Dataset(config.DATA_SET, config.DATA_DIR)
+        client_loaders, client_test_loaders, test_loader, label_splits = dataset.prepare_data(
+            config.NUM_CLIENTS,
+            config.BATCH_SIZE,
+            config.DATA_SPLIT_MODE,
+            config.NON_IID_CLASSES_RATIO_PER_CLIENT
+        )
 
-    if config.DATA_SPLIT_MODE == 'non-iid' and config.MODEL in ['mlp2', 'mlp3', 'vgg']:
-        print("\n--- Non-IID Label Distribution ---")
-        print(f"  - Classes per Client Ratio: {config.NON_IID_CLASSES_RATIO_PER_CLIENT}")
-        for client_id, labels in label_splits.items():
-            print(f"    - Client {client_id}: Classes {sorted(labels)}")
-        print("----------------------------------\n")
-    
     # Federated Training Loop
     print("Starting Federated Training...\n")
     start_time = time.time()
@@ -155,6 +332,8 @@ def main():
         test_loss, accuracy = federated.evaluate(global_model, test_loader, eval_device)
         global_model.cpu()
 
+        print_info(label_splits)
+
         print(f"Round {comm_round:3d}/{config.COMMUNICATION_ROUNDS} | "
                 f"Test Loss: {test_loss:.4f} | "
                 f"Accuracy: {accuracy:6.2f}%")
@@ -163,7 +342,7 @@ def main():
         round_start_time = time.time()
 
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"\nRound {comm_round:3d}/{config.COMMUNICATION_ROUNDS} | Learning Rate: {current_lr:.5f}")
+        # print(f"\nRound {comm_round:3d}/{config.COMMUNICATION_ROUNDS} | Learning Rate: {current_lr:.5f}")
 
         client_contributions = []
         client_metrics = []
@@ -204,42 +383,163 @@ def main():
                     client_contributions.append((client_state, client_size))
                     client_metrics.append(metrics)
         else:
-            # Distributed: Each rank processes a partition of clients on its local GPU
-            local_device_index = local_rank if torch.cuda.is_available() else 0
+            # Distributed: Each rank processes a partition of clients using local GPUs via ThreadPool
             assigned_clients = [i for i in range(config.NUM_CLIENTS) if (i % world_size) == rank]
-            for i in assigned_clients:
-                scaler_rate = config.W_CLIENT[i] / config.MAX_W
-                label_split = label_splits.get(i)
-                args = (
-                    i,
-                    local_device_index,
-                    global_model_state_cpu,
-                    client_loaders[i],
-                    test_loader,
-                    client_test_loaders[i],
-                    config.W_CLIENT[i],
-                    scaler_rate,
-                    label_split,
-                    config.USE_MASKED_LOSS,
-                    current_lr,
-                    config.MOMENTUM,
-                    config.WEIGHT_DECAY,
-                    config.GRAD_CLIP_NORM
-                )
-                client_state, client_size, metrics = run_client_gpu(args)
-                client_contributions.append((client_state, client_size))
-                client_metrics.append(metrics)
-
-            # Gather contributions from all ranks to rank 0
-            all_contribs = [None for _ in range(world_size)]
-            dist.all_gather_object(all_contribs, client_contributions)
+            
+            # Use ThreadPool to parallelize across local GPUs
+            with ThreadPoolExecutor(max_workers=num_gpus if num_gpus > 0 else 1) as executor:
+                tasks = []
+                for idx, i in enumerate(assigned_clients):
+                    gpu_index = idx % num_gpus if num_gpus > 0 else 0  # Cycle through local GPUs
+                    scaler_rate = config.W_CLIENT[i] / config.MAX_W
+                    label_split = label_splits.get(i)
+                    args = (
+                        i,
+                        gpu_index,
+                        global_model_state_cpu,
+                        client_loaders[i],
+                        test_loader,
+                        client_test_loaders[i],
+                        config.W_CLIENT[i],
+                        scaler_rate,
+                        label_split,
+                        config.USE_MASKED_LOSS,
+                        current_lr,
+                        config.MOMENTUM,
+                        config.WEIGHT_DECAY,
+                        config.GRAD_CLIP_NORM
+                    )
+                    tasks.append(args)
+                
+                futures = [executor.submit(run_client_gpu, task) for task in tasks]
+                
+                for future in as_completed(futures):
+                    client_state, client_size, metrics = future.result()
+                    client_contributions.append((client_state, client_size))
+                    client_metrics.append(metrics)
+            
+            # Gather contributions using all_gather for better performance
+            # Step 1: Flatten state_dicts to tensors
+            def state_dict_to_tensor(state_dict):
+                """Flatten state_dict to a single 1D tensor"""
+                tensors = []
+                for key in sorted(state_dict.keys()):
+                    tensors.append(state_dict[key].flatten())
+                return torch.cat(tensors)
+            
+            def tensor_to_state_dict(flat_tensor, reference_state_dict):
+                """Restore state_dict from flattened tensor"""
+                state_dict = {}
+                offset = 0
+                for key in sorted(reference_state_dict.keys()):
+                    param_shape = reference_state_dict[key].shape
+                    param_numel = reference_state_dict[key].numel()
+                    state_dict[key] = flat_tensor[offset:offset+param_numel].reshape(param_shape)
+                    offset += param_numel
+                return state_dict
+            
+            # Prepare local contributions as tensors
+            # NCCL requires CUDA tensors, so we keep them on GPU
+            comm_device = torch.device(f'cuda:{local_rank}')
+            local_flat_tensors = []
+            local_sizes = []
+            for client_state, client_size in client_contributions:
+                flat = state_dict_to_tensor(client_state).to(comm_device)
+                local_flat_tensors.append(flat)
+                local_sizes.append(client_size)
+            
+            # Each rank sends number of clients it processed
+            num_local_clients = len(client_contributions)
+            num_clients_per_rank = [torch.zeros(1, dtype=torch.long, device=comm_device) for _ in range(world_size)]
+            dist.all_gather(num_clients_per_rank, torch.tensor([num_local_clients], dtype=torch.long, device=comm_device))
+            num_clients_per_rank = [int(x.item()) for x in num_clients_per_rank]
+            
+            # Determine max tensor size across all ranks
+            if local_flat_tensors:
+                local_max_size = max(t.numel() for t in local_flat_tensors)
+            else:
+                local_max_size = 0
+            max_size_tensor = torch.tensor([local_max_size], dtype=torch.long, device=comm_device)
+            max_sizes = [torch.zeros(1, dtype=torch.long, device=comm_device) for _ in range(world_size)]
+            dist.all_gather(max_sizes, max_size_tensor)
+            global_max_size = max(int(x.item()) for x in max_sizes)
+            
+            # Concatenate all local tensors into one big tensor
+            if num_local_clients > 0:
+                # Stack all local tensors (pad to same size first)
+                padded_locals = []
+                for t in local_flat_tensors:
+                    padded = torch.zeros(global_max_size, device=comm_device)
+                    padded[:t.numel()] = t
+                    padded_locals.append(padded)
+                # Shape: [num_local_clients, global_max_size]
+                stacked_local = torch.stack(padded_locals)
+            else:
+                stacked_local = torch.zeros(1, global_max_size, device=comm_device)
+            
+            # Gather sizes for all clients from this rank
+            local_sizes_tensor = torch.tensor(local_sizes if local_sizes else [0.0], device=comm_device)
+            
+            # All-gather stacked tensors - each rank sends all its clients at once
+            max_clients = max(num_clients_per_rank)
+            gathered_all = []
+            gathered_sizes_all = []
+            
+            for r in range(world_size):
+                num_clients_r = num_clients_per_rank[r]
+                recv_tensor = torch.zeros(num_clients_r, global_max_size, device=comm_device)
+                recv_sizes = torch.zeros(num_clients_r, device=comm_device)
+                gathered_all.append(recv_tensor)
+                gathered_sizes_all.append(recv_sizes)
+            
+            # Broadcast from each rank in turn
+            for src_rank in range(world_size):
+                if rank == src_rank:
+                    send_data = stacked_local[:num_local_clients] if num_local_clients > 0 else torch.zeros(0, global_max_size, device=comm_device)
+                    send_sizes = local_sizes_tensor[:num_local_clients] if num_local_clients > 0 else torch.zeros(0, device=comm_device)
+                else:
+                    send_data = None
+                    send_sizes = None
+                
+                # Broadcast using object list for variable sizes
+                obj_list = [send_data if rank == src_rank else None]
+                dist.broadcast_object_list(obj_list, src=src_rank)
+                if rank != src_rank:
+                    gathered_all[src_rank] = obj_list[0].to(comm_device) if obj_list[0] is not None else torch.zeros(0, global_max_size, device=comm_device)
+                else:
+                    gathered_all[src_rank] = send_data
+                
+                size_list = [send_sizes if rank == src_rank else None]
+                dist.broadcast_object_list(size_list, src=src_rank)
+                if rank != src_rank:
+                    gathered_sizes_all[src_rank] = size_list[0].to(comm_device) if size_list[0] is not None else torch.zeros(0, device=comm_device)
+                else:
+                    gathered_sizes_all[src_rank] = send_sizes
+            
+            # Rank 0 reconstructs all client states
             if rank == 0:
-                # Flatten list of lists
-                client_contributions = [item for sublist in all_contribs for item in sublist]
+                all_client_states = []
+                all_client_sizes = []
+                for r in range(world_size):
+                    for i in range(num_clients_per_rank[r]):
+                        # Move to CPU and restore state dict
+                        flat_tensor = gathered_all[r][i].cpu()
+                        restored_state = tensor_to_state_dict(flat_tensor, global_model_state_cpu)
+                        all_client_states.append(restored_state)
+                        all_client_sizes.append(float(gathered_sizes_all[r][i].item()))
+            
+            # Use all_gather_object only for lightweight metrics
+            all_metrics = [None for _ in range(world_size)]
+            dist.all_gather_object(all_metrics, client_metrics)
+            
+            if rank == 0:
+                client_contributions = [(all_client_states[i], all_client_sizes[i]) 
+                                       for i in range(len(all_client_states))]
+                client_metrics = [item for sublist in all_metrics for item in sublist]
+            
             # Sync before aggregation
             dist.barrier()
 
-        # Server aggregation phase
         # Server aggregation phase
         if not is_dist or (is_dist and rank == 0):
             agg_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -272,11 +572,11 @@ def main():
             test_loss, accuracy = federated.evaluate(global_model, test_loader, eval_device)
             global_model.cpu()
 
-        round_duration = time.time() - round_start_time
-        print(f"Round {comm_round:3d}/{config.COMMUNICATION_ROUNDS} | "
-              f"Test Loss: {test_loss:.4f} | "
-              f"Accuracy: {accuracy:6.2f}% | "
-              f"Round Time: {round_duration:.2f}s")
+            round_duration = time.time() - round_start_time
+            print(f"Round {comm_round:3d}/{config.COMMUNICATION_ROUNDS} | "
+                f"Test Loss: {test_loss:.4f} | "
+                f"Accuracy: {accuracy:6.2f}% | "
+                f"Round Time: {round_duration:.2f}s")
         
         if ((not is_dist) or (is_dist and rank == 0)) and config.CLIENT_EVAL:
             # Log Client Metrics
@@ -302,6 +602,11 @@ def main():
             print("  - Client Local Details:")
             for i, m in enumerate(client_metrics):
                 print(f"    Client {i}: Local Acc: {m['local_accuracy']:6.2f}%, Local Loss: {m['local_loss']:.4f}")
+
+        # Proactively release CUDA caches between rounds to avoid fragmentation across clients.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
 
     total_time = time.time() - start_time
     if (not is_dist) or (is_dist and rank == 0):

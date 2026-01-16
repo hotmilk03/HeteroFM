@@ -14,7 +14,7 @@ LOCAL_EPOCHS = 5 # 40
 # MODEL PARAMETERS
 # =============================================================================
 
-MODEL = 'resnet50' # 'mlp2', 'mlp3', 'vgg', 'resnet50'
+MODEL = 'resnet50' # 'mlp2', 'mlp3', 'vgg11', 'resnet50'
 
 VGG_WIDTH_MULTIPLIER = 1 # 8
 VGG_CFG_ORIGIN = {
@@ -41,15 +41,14 @@ MIN_W = min(W_CLIENT)
 model_to_dataset = {
     'mlp2': 'mnist',
     'mlp3': 'mnist',
-    'vgg': 'cifar10',
+    'vgg11': 'cifar10',
     'resnet50': 'imagenet'
 }
 DATA_SET = model_to_dataset[MODEL] # 'mnist', 'cifar10', 'imagenet'
 
-IMAGENET_SUBSET_RATIO = 0.1
-BATCH_SIZE = 256
+IMAGENET_SUBSET_RATIO = 0.01
+BATCH_SIZE = 32 # only 32 OK
 DATA_DIR = './data'
-DATA_DIR_IMAGENET = '/shared/s1/lab08/soyoung/imagenet_data' # data directory for big ImageNet
 DATA_SPLIT_MODE = 'iid' # Data split mode. 'iid' or 'non-iid'.
 DYNAMIC_ON_NON_IID_SPLIT = False
 
@@ -68,11 +67,14 @@ LR_DECAY_MILESTONES = [50, 75]  # [150, 250]
 LR_DECAY_GAMMA = 0.1 # 0.5 ~ 0.8
 GRAD_CLIP_NORM = 1.0
 
+# Mixed precision helps reduce GPU memory pressure on CUDA devices.
+USE_AMP = True
+
 MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
 
 USE_MASKED_LOSS = True
-NUM_WORKERS = 8
+NUM_WORKERS = 1 # only 1 OK
 
 # =============================================================================
 # REARRANGEMENT PARAMETERS
@@ -84,7 +86,7 @@ MATCH = 'E' # 'C' for contraction, 'E' for extension
 
 SINKHORN = False
 SINKHORN_NUM_ITER = 50
-SINKHORN_LAMBDA = 0.1
+SINKHORN_LAMBDA = 1.0
 SINKHORN_LR = 0.1  # Learning rate for gradient descent optimization # 0.1 or 1.0
 SINKHORN_SCALING = 1.0  # Cost scaling factor (matches symmnet.py: self.l)
 
