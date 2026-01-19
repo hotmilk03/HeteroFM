@@ -120,8 +120,8 @@ log_filenames = [
     # '4) vgg-100-40-noniid-dynamic-1-0.1-HeteroFL-samesize.log',
     # '4) vgg-100-40-noniid-dynamic-1-0.1-ME-samesize.log',
 
-    'exp_resnet50_0.01_default.log',
-    'exp_resnet50_0.01_ME.log',
+    'exp_vgg11_default_diff0.8.log',
+    'exp2_vgg11_ME_diff0.8.log',
 ]
 label_names = [
     'HeteroFL',
@@ -138,6 +138,6 @@ label_names = [
 # title = 'VGG(40 epoch, 0.1 lr, noniid dynamic split, diffsize) : HeteroFL vs ME'
 # output_image = '4) vgg-100-40-noniid-dynamic-1-0.1-samesize(HeteroFL vs ME).png'
 # title = 'VGG(40 epoch, 0.1 lr, noniid dynamic split, samesize) : HeteroFL vs ME'
-output_image = 'exp_resnet50_0.01.png'
-title = 'ResNet50 (0.01 subset)'
+output_image = 'exp2_vgg11_diff0.8_loss.png'
+title = 'VGG11 (diff 0.8)'
 parse_log_and_plot(log_filenames, label_names, title, output_image)

@@ -98,4 +98,4 @@ SILENT = True
 PERM_WARNING = True
 CLIENT_EVAL = True
 DRAW_ALL = True # TODO : draw clients' acc/loss range in graph
-DRAW = 'acc' # 'acc' or 'loss'
+DRAW = 'loss' # 'acc' or 'loss'

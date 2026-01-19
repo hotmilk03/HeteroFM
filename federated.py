@@ -145,24 +145,40 @@ def aggregate_heterofl(global_model_state, client_contributions, device='cpu'):
 def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
     """
     Aggregates heterogeneous client models by first finding a permutation to align neurons
-    and then averaging. The reference model for permutation is the one with the smallest client size.
+    and then averaging. The reference model selection depends on MATCH mode:
+    - Extension (E): Use largest model as reference (since global model is MAX_W)
+    - Contraction (C): Use smallest model as reference (since global model is MIN_W)
     """
     if not client_contributions:
         return global_model_state
 
-    # 1. Find the client with the smallest size to use as the reference model
-    min_size_ratio = float('inf')
-    ref_client_state = None
-    for state, size_ratio in client_contributions:
-        if size_ratio < min_size_ratio:
-            min_size_ratio = size_ratio
-            ref_client_state = state
+    # 1. Find the reference client based on MATCH mode
+    if config.MATCH == 'E':
+        # Extension mode: Use the largest client as reference
+        # This aligns with global model being MAX_W size
+        target_size_ratio = float('-inf')
+        ref_client_state = None
+        for state, size_ratio in client_contributions:
+            if size_ratio > target_size_ratio:
+                target_size_ratio = size_ratio
+                ref_client_state = state
+    elif config.MATCH == 'C':
+        # Contraction mode: Use the smallest client as reference
+        # This aligns with global model being MIN_W size
+        target_size_ratio = float('inf')
+        ref_client_state = None
+        for state, size_ratio in client_contributions:
+            if size_ratio < target_size_ratio:
+                target_size_ratio = size_ratio
+                ref_client_state = state
+    else:
+        raise ValueError(f"Unknown MATCH mode: {config.MATCH}")
     
     if ref_client_state is None:
         # This should not happen if client_contributions is not empty
         return global_model_state
 
-    # print(f"\n--- Rearranging models based on the smallest model (size: {min_size}) ---")
+    # print(f"\n--- Rearranging models based on reference model (size: {target_size_ratio}, mode: {config.MATCH}) ---")
 
     # Define permutation spec for the model
     if config.MODEL == 'mlp2':
@@ -199,7 +215,7 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
                 if key in params_b:
                     print(f"Layer {key}: params_a shape = {params_a[key].shape}, params_b shape = {params_b[key].shape}")
         
-        # Find the permutation that aligns params_b with params_a (the smallest model)
+        # Find the permutation that aligns params_b with params_a (the reference model)
         perm = weight_matching(
             ps, 
             params_a, 
@@ -234,11 +250,19 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
         count_state[key] = torch.zeros_like(count_state[key], dtype=torch.float32).to(device)
 
     # Sum up all permuted client model contributions
+    # After permutation, all models should have compatible shapes with global model
     for client_state, _ in permuted_client_contributions:
         for key, client_param in client_state.items():
             if key in agg_state:
                 client_param = client_param.to(device)
-                slices = [slice(0, min(client_dim, agg_dim)) for client_dim, agg_dim in zip(client_param.shape, agg_state[key].shape)]
+                global_shape = agg_state[key].shape
+                client_shape = client_param.shape
+                
+                # Create slices for valid region (intersection of client and global dimensions)
+                slices = [slice(0, min(client_dim, global_dim)) 
+                         for client_dim, global_dim in zip(client_shape, global_shape)]
+                
+                # Add client contribution to global state
                 agg_state[key][tuple(slices)] += client_param[tuple(slices)]
                 count_state[key][tuple(slices)] += 1
 

@@ -563,8 +563,10 @@ def main():
 
         global_model.load_state_dict(global_model_state)
         
-        optimizer.step() # nothing # erase?
-        scheduler.step() # erase?
+        # Note: In federated learning, we don't use optimizer.step() on global model
+        # The aggregation itself serves as the update step
+        # scheduler.step() updates learning rate for next round
+        scheduler.step()
 
         # Evaluate the global model
         if (not is_dist) or (is_dist and rank == 0):
