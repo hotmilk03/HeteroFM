@@ -1,3 +1,4 @@
+from datetime import timedelta
 import os
 import torch
 import torch.nn as nn
@@ -49,7 +50,8 @@ def _init_distributed():
             backend=backend, 
             rank=rank, 
             world_size=world_size,
-            device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None
+            device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None,
+            timeout=timedelta(minutes=60)
         )
         
         print(f"[Rank {rank}] Process group initialized successfully")

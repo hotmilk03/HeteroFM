@@ -85,9 +85,10 @@ PERMUTE = 'M' # 'Z' for zeroing, 'M' for maximizing
 MATCH = 'E' # 'C' for contraction, 'E' for extension
 
 SINKHORN = False
-SINKHORN_NUM_ITER = 50
+SINKHORN_MAX_ITER = 50  # Maximum GD iterations (50-100 needed for Hungarian parity, was 10)
+SINKHORN_NUM_ITER = 50  # Number of Sinkhorn-Knopp iterations per GD step
 SINKHORN_LAMBDA = 1.0
-SINKHORN_LR = 0.1  # Learning rate for gradient descent optimization # 0.1 or 1.0
+SINKHORN_LR = 1.0  # Learning rate for gradient descent optimization # 0.1 or 1.0
 SINKHORN_SCALING = 1.0  # Cost scaling factor (matches symmnet.py: self.l)
 
 # =============================================================================

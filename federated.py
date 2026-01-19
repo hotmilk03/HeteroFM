@@ -195,14 +195,15 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
     params_a = ref_client_state  # Reference for permutation
 
     permuted_client_contributions = []
-    for client_state, client_size_ratio in client_contributions:
+    for client_idx, (client_state, client_size_ratio) in enumerate(client_contributions):
         if client_state is ref_client_state:
             # The reference model does not need to be permuted
             permuted_client_contributions.append((client_state, client_size_ratio))
             # print(f"Skipping permutation for the reference model (size: {client_size}).")
             continue
 
-        # print(f"Rearranging client model with size {client_size}...")
+        if not config.SILENT:
+            print(f"[Aggregation] Processing client {client_idx+1}/{len(client_contributions)} (size: {client_size_ratio})...")
         
         params_b = client_state
 
@@ -216,14 +217,20 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
                     print(f"Layer {key}: params_a shape = {params_a[key].shape}, params_b shape = {params_b[key].shape}")
         
         # Find the permutation that aligns params_b with params_a (the reference model)
+        import time
+        start_time = time.time()
         perm = weight_matching(
             ps, 
             params_a, 
             params_b, 
             permute_mode=config.PERMUTE,
             match_mode=config.MATCH,
+            max_iter=config.SINKHORN_MAX_ITER,
             silent=config.SILENT
         )
+        elapsed = time.time() - start_time
+        if not config.SILENT or elapsed > 30:
+            print(f"[Aggregation] Client {client_idx+1} permutation completed in {elapsed:.2f}s")
         
         # Apply the permutation to params_b
         permuted_params_b = apply_permutation(ps, perm, params_b)

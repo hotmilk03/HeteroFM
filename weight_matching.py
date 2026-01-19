@@ -300,12 +300,18 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
             if not silent:
                 print(f"Iteration {iteration}/{p}: Improvement {new_L - old_L:.4f}")
 
-            if new_L > old_L + 1e-12: # np.isclose(new_L, old_L)
-                # print("progress == TRUE !!")
+            # Use relative threshold for robustness
+            improvement = new_L - old_L
+            relative_improvement = improvement / (abs(old_L) + 1e-8)
+            threshold = max(1e-4, abs(old_L) * 1e-6)  # Adaptive threshold
+            
+            if improvement > threshold:
                 progress = True
+                if config.PERM_WARNING:
+                    print(f"  [{p}] Improvement: {improvement:.6f} (relative: {relative_improvement:.6e})")
             else:
-                pass
-                # print("**progress not permuted")
+                if config.PERM_WARNING and abs(improvement) > 1e-10:
+                    print(f"  [{p}] No improvement: {improvement:.6f} (threshold: {threshold:.6f})")
             
             perm[p] = new_perm_for_b
 
@@ -345,9 +351,10 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
     lr = getattr(config, "SINKHORN_LR", 0.1)
     optimizer = torch.optim.Adam(P_matrices.values(), lr=lr)
     
-    num_sink = getattr(config, "SINKHORN_NUM_ITER", 50)
-    lambd_sink = getattr(config, "SINKHORN_LAMBDA", 0.1)
+    num_sink = getattr(config, "SINKHORN_NUM_ITER", 20)
+    lambd_sink = getattr(config, "SINKHORN_LAMBDA", 1.0)
     
+    prev_loss = float('inf')
     for iteration in range(max_iter):
         optimizer.zero_grad()
         
@@ -361,10 +368,10 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
             
             # Cost matrix: scale by lambda (matches symmnet.py: -self.p[i] * self.l)
             c = -P_matrices[p] * l
-            # Marginals: unnormalized ones to match symmnet.py
-            # In Sinkhorn.forward: log_a = log(a), so uniform prior with log(1) = 0
-            a = torch.ones(size_a, dtype=torch.float32)
-            b = torch.ones(size_b, dtype=torch.float32)
+            # Use normalized marginals consistently (uniform distribution)
+            # This ensures training matches final conversion
+            a = torch.ones(size_a, dtype=torch.float32) / size_a
+            b = torch.ones(size_b, dtype=torch.float32) / size_b
             
             soft_perms[p] = Sinkhorn.apply(c, a, b, num_sink, lambd_sink)
         
@@ -385,6 +392,7 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
                 elif match_mode == 'E':
                     # Extension mode: A is large (reference), B is small (target)
                     # We need to extend B to match A's non-axis dimensions for proper comparison
+                    # EXACTLY THE SAME AS HUNGARIAN VERSION
                     
                     # Create extended version of B with A's dimensions on non-axis dims
                     extended_shape = list(w_a.shape)
@@ -428,11 +436,20 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
             optimizer.step()
         
         if not silent and iteration % 10 == 0:
-            print(f"GD Iteration {iteration}: Loss {total_loss.item():.4f}")
+            print(f"Sinkhorn GD Iteration {iteration}: Loss {total_loss.item():.4f}")
         
-        # Early stopping if loss is very small
-        if total_loss.item() < 1e-6:
-            break
+        # Early stopping: check if loss is not changing significantly
+        # Use more aggressive early stopping to prevent NCCL timeout
+        if iteration > 0:
+            loss_change = abs(total_loss.item() - prev_loss)
+            relative_change = loss_change / (abs(prev_loss) + 1e-10)
+            
+            # Stop if either absolute or relative change is very small
+            if loss_change < 1e-5 or relative_change < 1e-5:
+                if config.PERM_WARNING:
+                    print(f"  Sinkhorn converged at iteration {iteration} (loss_change: {loss_change:.2e}, relative: {relative_change:.2e})")
+                break
+        prev_loss = total_loss.item()
     
     # Convert final soft permutations to hard permutations
     final_perm = {}
