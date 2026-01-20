@@ -470,7 +470,8 @@ def hierarchical_weight_matching(ps: PermutationSpec, model_params_list, permute
     Hierarchical weight matching for Extension mode.
     
     Strategy:
-    1. Sort models by size (smallest to largest)
+    For EACH permutation group (P_0, P_1, ...) independently:
+    1. Sort models by layer size for that specific permutation
     2. Use smallest as reference, permute all larger models
     3. Then use 2nd smallest as reference for its additional neurons, permute larger models
     4. Continue until all size tiers are processed
@@ -483,69 +484,118 @@ def hierarchical_weight_matching(ps: PermutationSpec, model_params_list, permute
         silent: Suppress output
     
     Returns:
-        List of permutations for each model (first model has identity permutation)
+        List of permutations for each model (dictionary per model with keys P_0, P_1, ...)
     """
     if len(model_params_list) < 2:
         raise ValueError("Need at least 2 models for hierarchical matching")
     
-    # Step 1: Determine model sizes and sort
-    model_sizes = []
-    for idx, params in enumerate(model_params_list):
-        # Get size of first permutable layer
-        first_perm = list(ps.perm_to_axes.keys())[0]
-        wk, axis = ps.perm_to_axes[first_perm][0]
-        size = params[wk].shape[axis]
-        model_sizes.append((idx, size, params))
-    
-    # Sort by size (ascending)
-    model_sizes.sort(key=lambda x: x[1])
-    sorted_indices = [x[0] for x in model_sizes]
-    sorted_sizes = [x[1] for x in model_sizes]
-    sorted_params = [x[2] for x in model_sizes]
-    
-    if not silent:
-        print(f"Model sizes (sorted): {sorted_sizes}")
-        print(f"Original indices: {sorted_indices}")
+    num_models = len(model_params_list)
+    perm_names = list(ps.perm_to_axes.keys())
     
     # Initialize permutations for all models
-    num_models = len(model_params_list)
-    final_perms = [None] * num_models
+    final_perms = [{} for _ in range(num_models)]
     
-    # First model (smallest) gets identity permutation
-    smallest_params = sorted_params[0]
-    smallest_idx = sorted_indices[0]
-    perm_sizes_smallest = {p: smallest_params[axes[0][0]].shape[axes[0][1]] 
-                          for p, axes in ps.perm_to_axes.items()}
-    final_perms[smallest_idx] = {p: torch.arange(n) for p, n in perm_sizes_smallest.items()}
-    
-    if not silent:
-        print(f"\n=== Stage 1: Smallest model (idx={smallest_idx}, size={sorted_sizes[0]}) as reference ===")
-    
-    # Step 2: Match all larger models to smallest
-    for i in range(1, num_models):
-        target_idx = sorted_indices[i]
-        target_params = sorted_params[i]
-        
+    # Process each permutation group independently
+    for perm_name in perm_names:
         if not silent:
-            print(f"\nMatching model {target_idx} (size={sorted_sizes[i]}) to smallest")
+            print(f"\n{'='*80}")
+            print(f"Processing permutation group: {perm_name}")
+            print(f"{'='*80}")
         
-        perm = weight_matching(
+        # Get layer size for this permutation for each model
+        wk, axis = ps.perm_to_axes[perm_name][0]
+        model_sizes_for_perm = []
+        
+        for idx, params in enumerate(model_params_list):
+            size = params[wk].shape[axis]
+            model_sizes_for_perm.append((idx, size, params))
+        
+        # Perform hierarchical matching for this permutation
+        perm_results = _hierarchical_match_single_perm(
             ps=ps,
-            params_a=smallest_params,  # small reference
-            params_b=target_params,     # large target
+            perm_name=perm_name,
+            model_sizes_for_perm=model_sizes_for_perm,
             permute_mode=permute_mode,
-            match_mode='E',
             max_iter=max_iter,
             silent=silent
         )
-        final_perms[target_idx] = perm
+        
+        # Store results in final_perms
+        for model_idx, perm_value in enumerate(perm_results):
+            final_perms[model_idx][perm_name] = perm_value
     
-    # Step 3: Hierarchical refinement for additional neurons
-    # Find unique size tiers (excluding smallest which is already done)
+    return final_perms
+
+
+def _hierarchical_match_single_perm(ps, perm_name, model_sizes_for_perm, permute_mode, max_iter, silent):
+    """
+    Perform hierarchical matching for a single permutation group.
+    
+    Args:
+        ps: PermutationSpec
+        perm_name: Name of the permutation (e.g., 'P_0', 'P_1')
+        model_sizes_for_perm: List of (idx, size, params) tuples
+        permute_mode: 'M' or 'Z'
+        max_iter: Maximum iterations
+        silent: Suppress output
+    
+    Returns:
+        List of permutation tensors, one per model (in original order)
+    """
+    num_models = len(model_sizes_for_perm)
+    
+    # Sort models by size for this specific permutation (ascending)
+    sorted_models = sorted(model_sizes_for_perm, key=lambda x: x[1])
+    sorted_indices = [x[0] for x in sorted_models]
+    sorted_sizes = [x[1] for x in sorted_models]
+    sorted_params = [x[2] for x in sorted_models]
+    
+    if not silent:
+        print(f"  Model sizes for {perm_name} (sorted): {sorted_sizes}")
+        print(f"  Original indices: {sorted_indices}")
+    
+    # Initialize permutations (in original order, not sorted order)
+    perm_results = [None] * num_models
+    
+    # Smallest model gets identity permutation
+    smallest_idx = sorted_indices[0]
+    smallest_size = sorted_sizes[0]
+    perm_results[smallest_idx] = torch.arange(smallest_size)
+    
+    if not silent:
+        print(f"  Stage 1: Smallest model (idx={smallest_idx}, size={smallest_size}) gets identity")
+    
+    # Step 1: Match all larger models to smallest for this permutation
+    smallest_params = sorted_params[0]
+    
+    for i in range(1, num_models):
+        target_idx = sorted_indices[i]
+        target_params = sorted_params[i]
+        target_size = sorted_sizes[i]
+        
+        if not silent:
+            print(f"  Matching model {target_idx} (size={target_size}) to smallest for {perm_name}")
+        
+        # Perform single-permutation matching
+        perm_tensor = _match_single_perm_layer(
+            ps=ps,
+            perm_name=perm_name,
+            params_a=smallest_params,
+            params_b=target_params,
+            size_a=smallest_size,
+            size_b=target_size,
+            permute_mode=permute_mode,
+            max_iter=max_iter,
+            silent=silent
+        )
+        
+        perm_results[target_idx] = perm_tensor
+    
+    # Step 2: Hierarchical refinement for additional neurons
     unique_sizes = sorted(set(sorted_sizes[1:]))
     
     for tier_idx, tier_size in enumerate(unique_sizes):
-        # Find the smallest model in this tier (2nd smallest, 3rd smallest, etc.)
+        # Find the smallest model in this tier
         ref_model_idx_in_sorted = None
         for i in range(1, num_models):
             if sorted_sizes[i] == tier_size:
@@ -555,43 +605,39 @@ def hierarchical_weight_matching(ps: PermutationSpec, model_params_list, permute
         if ref_model_idx_in_sorted is None:
             continue
         
-        # Get the previous tier size (reference for base neurons)
         prev_tier_size = sorted_sizes[ref_model_idx_in_sorted - 1]
-        
-        # Additional neurons: indices from prev_tier_size to tier_size
         num_additional = tier_size - prev_tier_size
         
         if num_additional == 0:
             if not silent:
-                print(f"\n=== Stage {tier_idx + 2}: Tier size {tier_size} has no additional neurons ===")
+                print(f"  Stage {tier_idx + 2}: Tier size {tier_size} has no additional neurons")
             continue
         
         if not silent:
-            print(f"\n=== Stage {tier_idx + 2}: Refining additional neurons (indices {prev_tier_size}:{tier_size}) ===")
-            print(f"Reference: model {sorted_indices[ref_model_idx_in_sorted]} (size={tier_size})")
+            print(f"  Stage {tier_idx + 2}: Refining additional neurons [{prev_tier_size}:{tier_size}] for {perm_name}")
         
-        # Reference model for this tier
         ref_params = sorted_params[ref_model_idx_in_sorted]
         ref_orig_idx = sorted_indices[ref_model_idx_in_sorted]
         
         # Match all larger models' additional neurons
         for i in range(ref_model_idx_in_sorted + 1, num_models):
             if sorted_sizes[i] <= tier_size:
-                continue  # Skip same-size models
+                continue
             
             target_idx = sorted_indices[i]
             target_params = sorted_params[i]
             
             if not silent:
-                print(f"  Refining model {target_idx} (size={sorted_sizes[i]})")
+                print(f"    Refining model {target_idx} (size={sorted_sizes[i]})")
             
-            # Create partial permutation matching only for additional neurons
-            additional_perm = _match_additional_neurons(
+            # Match additional neurons only
+            additional_perm = _match_additional_neurons_single_perm(
                 ps=ps,
+                perm_name=perm_name,
                 ref_params=ref_params,
                 target_params=target_params,
-                base_ref_perm=final_perms[ref_orig_idx],
-                base_target_perm=final_perms[target_idx],
+                base_ref_perm=perm_results[ref_orig_idx],
+                base_target_perm=perm_results[target_idx],
                 start_idx=prev_tier_size,
                 end_idx=tier_size,
                 permute_mode=permute_mode,
@@ -599,78 +645,62 @@ def hierarchical_weight_matching(ps: PermutationSpec, model_params_list, permute
                 silent=silent
             )
             
-            # Merge with existing permutation
-            final_perms[target_idx] = _merge_permutations(
-                final_perms[target_idx],
+            # Merge permutations
+            perm_results[target_idx] = _merge_single_perm(
+                perm_results[target_idx],
                 additional_perm,
-                start_idx=prev_tier_size,
-                end_idx=tier_size
+                start_idx=prev_tier_size
             )
     
-    return final_perms
+    return perm_results
 
-def _match_additional_neurons(ps, ref_params, target_params, base_ref_perm, base_target_perm,
-                               start_idx, end_idx, permute_mode, max_iter, silent):
+def _match_single_perm_layer(ps, perm_name, params_a, params_b, size_a, size_b, permute_mode, max_iter, silent):
     """
-    Match only the additional neurons (indices start_idx:end_idx) between reference and target.
+    Match a single permutation layer between two models.
     
-    Returns partial permutation for the additional neurons only.
+    Args:
+        ps: PermutationSpec
+        perm_name: Name of the permutation (e.g., 'P_0')
+        params_a: Reference model parameters (smaller)
+        params_b: Target model parameters (larger)
+        size_a: Size of the layer in model a
+        size_b: Size of the layer in model b
+        permute_mode: 'M' or 'Z'
+        max_iter: Maximum iterations
+        silent: Suppress output
+    
+    Returns:
+        Permutation tensor for params_b
     """
-    perm_names = list(ps.perm_to_axes.keys())
-    partial_perm = {}
+    # Build cost matrix for this permutation only
+    cost_matrix = torch.zeros(size_a, size_b)
     
-    for p in perm_names:
-        wk, axis = ps.perm_to_axes[p][0]
+    # Initialize identity permutation for iteration
+    current_perm = {perm_name: torch.arange(size_b)}
+    
+    for iteration in range(max_iter):
+        cost_matrix.zero_()
         
-        # Extract the additional neurons region
-        # Reference model: neurons at indices [start_idx:end_idx]
-        # Target model: all neurons at indices [start_idx:] (we'll permute within this range)
-        
-        ref_size = ref_params[wk].shape[axis]
-        target_size = target_params[wk].shape[axis]
-        
-        if ref_size < end_idx or target_size < end_idx:
-            # Not enough neurons in this layer, skip
-            partial_perm[p] = torch.arange(target_size)
-            continue
-        
-        num_ref_additional = end_idx - start_idx
-        num_target_additional = target_size - start_idx
-        
-        if num_target_additional <= 0 or num_ref_additional <= 0:
-            partial_perm[p] = torch.arange(target_size)
-            continue
-        
-        # Build cost matrix for additional neurons only
-        cost_matrix = torch.zeros(num_ref_additional, num_target_additional)
-        
-        for wk, axis in ps.perm_to_axes[p]:
-            # Get full weights
-            w_ref_full = get_permuted_param(ps, base_ref_perm, wk, ref_params)
-            w_target_full = get_permuted_param(ps, base_target_perm, wk, target_params)
+        # Accumulate cost across all layers affected by this permutation
+        for wk, axis in ps.perm_to_axes[perm_name]:
+            w_a = params_a[wk].clone()
             
-            # Extract additional neuron slices
-            # For axis dimension: take [start_idx:end_idx] for ref, [start_idx:] for target
-            # For other dimensions: match to ref size (crop if needed)
+            # Apply current permutation to params_b
+            w_b = params_b[wk]
+            if perm_name in ps.axes_to_perm.get(wk, [None] * len(w_b.shape)):
+                perm_axis = ps.axes_to_perm[wk].index(perm_name) if perm_name in ps.axes_to_perm[wk] else None
+                if perm_axis == axis:
+                    w_b = torch.index_select(w_b, axis, current_perm[perm_name])
             
-            ref_slices = [slice(None)] * w_ref_full.ndim
-            ref_slices[axis] = slice(start_idx, end_idx)
-            w_ref = w_ref_full[tuple(ref_slices)]
-            
-            target_slices = [slice(None)] * w_target_full.ndim
-            target_slices[axis] = slice(start_idx, None)
-            w_target = w_target_full[tuple(target_slices)]
-            
-            # Crop target to match ref's non-axis dimensions
-            crop_slices = [slice(0, w_ref.shape[d]) if d != axis else slice(None) 
-                          for d in range(w_target.ndim)]
-            w_target = w_target[tuple(crop_slices)]
+            # Crop to matching dimensions
+            slices = [slice(0, w_a.shape[d]) if d != axis else slice(None) for d in range(w_a.ndim)]
+            w_b_cropped = w_b[tuple(slices)]
             
             # Compute similarity
-            w_ref_flat = w_ref.movedim(axis, 0).reshape(w_ref.shape[axis], -1)
-            w_target_flat = w_target.movedim(axis, 0).reshape(w_target.shape[axis], -1)
+            w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
+            w_b_flat = w_b_cropped.movedim(axis, 0).reshape(w_b_cropped.shape[axis], -1)
             
-            dot_product = w_ref_flat @ w_target_flat.T
+            dot_product = w_a_flat @ w_b_flat.T
             
             if permute_mode == 'M':
                 cost = dot_product
@@ -681,52 +711,122 @@ def _match_additional_neurons(ps, ref_params, target_params, base_ref_perm, base
             
             cost_matrix += cost
         
-        # Solve assignment for additional neurons
+        # Solve assignment
         ri, ci = linear_sum_assignment(cost_matrix.numpy(), maximize=True)
         
-        # Map back to global indices
-        # ri are indices in [0, num_ref_additional), corresponding to [start_idx, end_idx)
-        # ci are indices in [0, num_target_additional), corresponding to [start_idx, target_size)
-        global_ci = ci + start_idx
+        # Create new permutation
+        sorted_ci = torch.from_numpy(ci[np.argsort(ri)]).long()
+        unmatched_indices = torch.tensor([i for i in range(size_b) if i not in sorted_ci], dtype=torch.long)
+        new_perm = torch.cat([sorted_ci, unmatched_indices])
         
-        # Create partial permutation: only specify mapping for indices [start_idx:target_size]
-        # Indices [0:start_idx] keep their current mapping
-        partial_perm[p] = torch.from_numpy(global_ci).long()
+        # Check convergence
+        if torch.equal(current_perm[perm_name], new_perm):
+            if not silent:
+                print(f"    Converged at iteration {iteration}")
+            break
+        
+        current_perm[perm_name] = new_perm
     
-    return partial_perm
+    return current_perm[perm_name]
 
-def _merge_permutations(base_perm, partial_perm, start_idx, end_idx):
+
+def _match_additional_neurons_single_perm(ps, perm_name, ref_params, target_params,
+                                          base_ref_perm, base_target_perm,
+                                          start_idx, end_idx, permute_mode, max_iter, silent):
     """
-    Merge partial permutation into base permutation.
+    Match only additional neurons for a single permutation.
     
-    For indices [start_idx:end_idx], update the permutation based on partial_perm.
-    Keep other indices unchanged.
+    Args:
+        perm_name: Name of the permutation
+        base_ref_perm: Current permutation for reference model (1D tensor)
+        base_target_perm: Current permutation for target model (1D tensor)
+        start_idx: Start index of additional neurons
+        end_idx: End index of additional neurons
+    
+    Returns:
+        Partial permutation tensor for additional neurons (global indices)
     """
-    merged_perm = {}
+    wk, axis = ps.perm_to_axes[perm_name][0]
     
-    for p in base_perm.keys():
-        base = base_perm[p].clone()
-        partial = partial_perm[p]
-        
-        # The partial permutation maps additional neurons
-        # We need to update base[start_idx:] with the new mapping from partial
-        
-        # Current mapping of indices [start_idx:] in base
-        current_mapping = base[start_idx:].clone()
-        
-        # partial contains new indices for [start_idx:], but we need to remap them
-        # partial[i] is the NEW position for the neuron currently at position (start_idx + i)
-        
-        # Actually, partial_perm from _match_additional_neurons returns global indices
-        # So we can directly use them
-        new_mapping = partial
-        
-        # Replace the tail of base permutation
-        base[start_idx:start_idx + len(new_mapping)] = new_mapping
-        
-        merged_perm[p] = base
+    ref_size = ref_params[wk].shape[axis]
+    target_size = target_params[wk].shape[axis]
     
-    return merged_perm
+    if ref_size < end_idx or target_size < end_idx:
+        # Not enough neurons
+        return base_target_perm[start_idx:]
+    
+    num_ref_additional = end_idx - start_idx
+    num_target_additional = target_size - start_idx
+    
+    if num_target_additional <= 0 or num_ref_additional <= 0:
+        return base_target_perm[start_idx:]
+    
+    # Build cost matrix for additional neurons
+    cost_matrix = torch.zeros(num_ref_additional, num_target_additional)
+    
+    for wk, axis in ps.perm_to_axes[perm_name]:
+        # Get permuted weights
+        w_ref = ref_params[wk]
+        w_target = target_params[wk]
+        
+        # Apply base permutations
+        w_ref = torch.index_select(w_ref, axis, base_ref_perm)
+        w_target = torch.index_select(w_target, axis, base_target_perm)
+        
+        # Extract additional neuron slices
+        ref_slices = [slice(None)] * w_ref.ndim
+        ref_slices[axis] = slice(start_idx, end_idx)
+        w_ref_add = w_ref[tuple(ref_slices)]
+        
+        target_slices = [slice(None)] * w_target.ndim
+        target_slices[axis] = slice(start_idx, None)
+        w_target_add = w_target[tuple(target_slices)]
+        
+        # Crop to match dimensions
+        crop_slices = [slice(0, w_ref_add.shape[d]) if d != axis else slice(None)
+                      for d in range(w_target_add.ndim)]
+        w_target_add = w_target_add[tuple(crop_slices)]
+        
+        # Compute similarity
+        w_ref_flat = w_ref_add.movedim(axis, 0).reshape(w_ref_add.shape[axis], -1)
+        w_target_flat = w_target_add.movedim(axis, 0).reshape(w_target_add.shape[axis], -1)
+        
+        dot_product = w_ref_flat @ w_target_flat.T
+        
+        if permute_mode == 'M':
+            cost = dot_product
+        elif permute_mode == 'Z':
+            cost = -torch.abs(dot_product)
+        else:
+            raise ValueError(f"Unknown PERMUTE mode: {permute_mode}")
+        
+        cost_matrix += cost
+    
+    # Solve assignment
+    ri, ci = linear_sum_assignment(cost_matrix.numpy(), maximize=True)
+    
+    # Convert to global indices
+    global_ci = ci + start_idx
+    
+    return torch.from_numpy(global_ci).long()
+
+
+def _merge_single_perm(base_perm, partial_perm, start_idx):
+    """
+    Merge partial permutation into base permutation for a single perm layer.
+    
+    Args:
+        base_perm: Base permutation tensor
+        partial_perm: Partial permutation for neurons starting from start_idx
+        start_idx: Starting index
+    
+    Returns:
+        Merged permutation tensor
+    """
+    merged = base_perm.clone()
+    merged[start_idx:start_idx + len(partial_perm)] = partial_perm
+    return merged
+
 
 def get_model_params_as_dict(model):
     """Converts a PyTorch model's state_dict to a flattened dictionary."""
