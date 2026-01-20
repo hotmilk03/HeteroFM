@@ -3,8 +3,9 @@ import torch.nn as nn
 import torch.optim as optim
 import copy
 from model import init_model
-from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, vgg_permutation_spec, resnet50_permutation_spec, weight_matching, apply_permutation
+from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, vgg_permutation_spec, resnet50_permutation_spec, weight_matching, hierarchical_weight_matching, apply_permutation
 import config
+import time
 
 def evaluate(model, test_loader, device):
     """
@@ -144,41 +145,11 @@ def aggregate_heterofl(global_model_state, client_contributions, device='cpu'):
 
 def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
     """
-    Aggregates heterogeneous client models by first finding a permutation to align neurons
-    and then averaging. The reference model selection depends on MATCH mode:
-    - Extension (E): Use largest model as reference (since global model is MAX_W)
-    - Contraction (C): Use smallest model as reference (since global model is MIN_W)
+    Aggregates heterogeneous client models using hierarchical weight matching.
+    Uses hierarchical matching to align all models progressively from smallest to largest.
     """
     if not client_contributions:
         return global_model_state
-
-    # 1. Find the reference client based on MATCH mode
-    if config.MATCH == 'E':
-        # Extension mode: Use the largest client as reference
-        # This aligns with global model being MAX_W size
-        target_size_ratio = float('-inf')
-        ref_client_state = None
-        for state, size_ratio in client_contributions:
-            if size_ratio > target_size_ratio:
-                target_size_ratio = size_ratio
-                ref_client_state = state
-    elif config.MATCH == 'C':
-        # Contraction mode: Use the smallest client as reference
-        # This aligns with global model being MIN_W size
-        target_size_ratio = float('inf')
-        ref_client_state = None
-        for state, size_ratio in client_contributions:
-            if size_ratio < target_size_ratio:
-                target_size_ratio = size_ratio
-                ref_client_state = state
-    else:
-        raise ValueError(f"Unknown MATCH mode: {config.MATCH}")
-    
-    if ref_client_state is None:
-        # This should not happen if client_contributions is not empty
-        return global_model_state
-
-    # print(f"\n--- Rearranging models based on reference model (size: {target_size_ratio}, mode: {config.MATCH}) ---")
 
     # Define permutation spec for the model
     if config.MODEL == 'mlp2':
@@ -191,63 +162,43 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
         ps = resnet50_permutation_spec()
     else:
         raise ValueError(f"No permutation spec defined for model: {config.MODEL}")
-        
-    params_a = ref_client_state  # Reference for permutation
 
+    # Extract all client states and size ratios
+    client_states = [state for state, _ in client_contributions]
+    client_size_ratios = [size_ratio for _, size_ratio in client_contributions]
+    
+    if not config.SILENT:
+        print(f"\n--- Hierarchical Weight Matching for {len(client_states)} clients ---")
+        print(f"Client sizes: {client_size_ratios}")
+    
+    # Perform hierarchical weight matching
+    start_time = time.time()
+    
+    permutations = hierarchical_weight_matching(
+        ps=ps,
+        model_params_list=client_states,
+        permute_mode=config.PERMUTE,
+        max_iter=config.SINKHORN_MAX_ITER,
+        silent=config.SILENT
+    )
+    
+    elapsed = time.time() - start_time
+    if not config.SILENT or elapsed > 30:
+        print(f"[Aggregation] Hierarchical matching completed in {elapsed:.2f}s")
+    
+    # Apply permutations to all clients
     permuted_client_contributions = []
-    for client_idx, (client_state, client_size_ratio) in enumerate(client_contributions):
-        if client_state is ref_client_state:
-            # The reference model does not need to be permuted
-            permuted_client_contributions.append((client_state, client_size_ratio))
-            # print(f"Skipping permutation for the reference model (size: {client_size}).")
-            continue
-
+    for client_idx, ((client_state, client_size_ratio), perm) in enumerate(zip(client_contributions, permutations)):
         if not config.SILENT:
-            print(f"[Aggregation] Processing client {client_idx+1}/{len(client_contributions)} (size: {client_size_ratio})...")
+            print(f"[Aggregation] Applying permutation to client {client_idx+1}/{len(client_contributions)} (size: {client_size_ratio})")
         
-        params_b = client_state
-
-        if not config.SILENT:
-            # print(params_a)
-            # print(params_b)
-            print(params_a.keys())
-            print(params_b.keys())
-            for key in params_a:
-                if key in params_b:
-                    print(f"Layer {key}: params_a shape = {params_a[key].shape}, params_b shape = {params_b[key].shape}")
+        # Apply the permutation
+        permuted_params = apply_permutation(ps, perm, client_state)
         
-        # Find the permutation that aligns params_b with params_a (the reference model)
-        import time
-        start_time = time.time()
-        perm = weight_matching(
-            ps, 
-            params_a, 
-            params_b, 
-            permute_mode=config.PERMUTE,
-            match_mode=config.MATCH,
-            max_iter=config.SINKHORN_MAX_ITER,
-            silent=config.SILENT
-        )
-        elapsed = time.time() - start_time
-        if not config.SILENT or elapsed > 30:
-            print(f"[Aggregation] Client {client_idx+1} permutation completed in {elapsed:.2f}s")
+        if config.PERM_WARNING and all(torch.allclose(client_state[k], permuted_params[k]) for k in client_state):
+            print(f"  Warning: Permutation did not change client {client_idx+1} parameters.")
         
-        # Apply the permutation to params_b
-        permuted_params_b = apply_permutation(ps, perm, params_b)
-
-        # print shape of permuted_params_b & params_b
-        # print(f"params_b shapes: {[params_b[k].shape for k in params_b]}")
-        # print(f"permuted_params_b shapes: {[permuted_params_b[k].shape for k in permuted_params_b]}")
-        
-        if config.PERM_WARNING and all(torch.allclose(params_b[k], permuted_params_b[k]) for k in params_b):
-            print("Warning: Permutation did not change the parameters.")
-        else:
-            pass
-            # print("Permutation applied successfully.")
-            # print(f"perm: {perm}")
-
-        permuted_client_contributions.append((permuted_params_b, client_size_ratio))
-        # print(f"Finished rearranging client model with size {client_size}.")
+        permuted_client_contributions.append((permuted_params, client_size_ratio))
 
     # 2. Aggregate the permuted models on GPU
     agg_state = copy.deepcopy(global_model_state)

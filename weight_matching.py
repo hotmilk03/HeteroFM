@@ -184,11 +184,12 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
                    for d, p_name in enumerate(p_spec) if p_name is not None and k in params_a), \
                    "In Contraction mode, params_a (reference) must be the smaller model"
     elif match_mode == 'E':
-        # Extension: params_a should be larger or equal
-        assert all(params_a[k].shape[d] >= params_b[k].shape[d] 
+        # Extension: params_a is the SMALLEST (reference), params_b is LARGER (to be permuted)
+        # CHANGED: Now small model is reference, large model is permuted
+        assert all(params_a[k].shape[d] <= params_b[k].shape[d] 
                    for k, p_spec in ps.axes_to_perm.items() 
                    for d, p_name in enumerate(p_spec) if p_name is not None and k in params_a), \
-                   "In Extension mode, params_a (reference) must be the larger model"
+                   "In Extension mode, params_a (reference) must be the SMALLER model, params_b (target) the LARGER"
     else:
         raise ValueError(f"Unknown match_mode: {match_mode}")
 
@@ -239,22 +240,13 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
                     w_b_permuted = w_b_permuted[tuple(slices)]
 
                 elif match_mode == 'E':
-                    # Extension mode: A is large (reference), B is small (target)
-                    # We need to extend B to match A's non-axis dimensions for proper comparison
+                    # Extension mode: A is SMALL (reference), B is LARGE (target to permute)
+                    # CHANGED: Now we crop B to match A's dimensions, or extend A
+                    # Since we're permuting B (large), we only compare the overlapping region
                     
-                    # Create extended version of B with A's dimensions on non-axis dims
-                    extended_shape = list(w_a.shape)
-                    extended_shape[axis] = w_b_permuted.shape[axis]  # Keep B's axis size
-                    
-                    # Initialize with zeros (or could use other strategies)
-                    w_b_extended = torch.zeros(extended_shape, dtype=w_b_permuted.dtype, device=w_b_permuted.device)
-                    
-                    # Copy B's data into the extended tensor
-                    slices = [slice(0, w_b_permuted.shape[d]) for d in range(w_b_permuted.ndim)]
-                    w_b_extended[tuple(slices)] = w_b_permuted
-                    
-                    # Use extended version for comparison
-                    w_b_permuted = w_b_extended
+                    # Crop B to match A's non-axis dimensions for alignment
+                    # Keep full axis dimension for B (we're permuting this)
+                    w_b_permuted = w_b_permuted[tuple(slices)]
 
                 # Align axes for dot product
                 w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
@@ -401,23 +393,9 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
                     # Cut B to match A's dimensions  
                     w_b = w_b[tuple(slices)]
                 elif match_mode == 'E':
-                    # Extension mode: A is large (reference), B is small (target)
-                    # We need to extend B to match A's non-axis dimensions for proper comparison
-                    # EXACTLY THE SAME AS HUNGARIAN VERSION
-                    
-                    # Create extended version of B with A's dimensions on non-axis dims
-                    extended_shape = list(w_a.shape)
-                    extended_shape[axis] = w_b.shape[axis]  # Keep B's axis size
-                    
-                    # Initialize with zeros
-                    w_b_extended = torch.zeros(extended_shape, dtype=w_b.dtype, device=w_b.device)
-                    
-                    # Copy B's data into the extended tensor
-                    slices_copy = [slice(0, w_b.shape[d]) for d in range(w_b.ndim)]
-                    w_b_extended[tuple(slices_copy)] = w_b
-                    
-                    # Use extended version for comparison
-                    w_b = w_b_extended
+                    # Extension mode: A is SMALL (reference), B is LARGE (target to permute)
+                    # CHANGED: Crop B to match A's non-axis dimensions
+                    w_b = w_b[tuple(slices)]
                 
                 # Align axes for dot product - same as original weight_matching
                 w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
@@ -486,6 +464,269 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
             final_perm[p] = torch.cat([sorted_ci, unmatched_b_indices])
     
     return final_perm
+
+def hierarchical_weight_matching(ps: PermutationSpec, model_params_list, permute_mode, max_iter=100, silent=False):
+    """
+    Hierarchical weight matching for Extension mode.
+    
+    Strategy:
+    1. Sort models by size (smallest to largest)
+    2. Use smallest as reference, permute all larger models
+    3. Then use 2nd smallest as reference for its additional neurons, permute larger models
+    4. Continue until all size tiers are processed
+    
+    Args:
+        ps: PermutationSpec
+        model_params_list: List of parameter dictionaries for each model
+        permute_mode: 'M' or 'Z'
+        max_iter: Maximum iterations per matching
+        silent: Suppress output
+    
+    Returns:
+        List of permutations for each model (first model has identity permutation)
+    """
+    if len(model_params_list) < 2:
+        raise ValueError("Need at least 2 models for hierarchical matching")
+    
+    # Step 1: Determine model sizes and sort
+    model_sizes = []
+    for idx, params in enumerate(model_params_list):
+        # Get size of first permutable layer
+        first_perm = list(ps.perm_to_axes.keys())[0]
+        wk, axis = ps.perm_to_axes[first_perm][0]
+        size = params[wk].shape[axis]
+        model_sizes.append((idx, size, params))
+    
+    # Sort by size (ascending)
+    model_sizes.sort(key=lambda x: x[1])
+    sorted_indices = [x[0] for x in model_sizes]
+    sorted_sizes = [x[1] for x in model_sizes]
+    sorted_params = [x[2] for x in model_sizes]
+    
+    if not silent:
+        print(f"Model sizes (sorted): {sorted_sizes}")
+        print(f"Original indices: {sorted_indices}")
+    
+    # Initialize permutations for all models
+    num_models = len(model_params_list)
+    final_perms = [None] * num_models
+    
+    # First model (smallest) gets identity permutation
+    smallest_params = sorted_params[0]
+    smallest_idx = sorted_indices[0]
+    perm_sizes_smallest = {p: smallest_params[axes[0][0]].shape[axes[0][1]] 
+                          for p, axes in ps.perm_to_axes.items()}
+    final_perms[smallest_idx] = {p: torch.arange(n) for p, n in perm_sizes_smallest.items()}
+    
+    if not silent:
+        print(f"\n=== Stage 1: Smallest model (idx={smallest_idx}, size={sorted_sizes[0]}) as reference ===")
+    
+    # Step 2: Match all larger models to smallest
+    for i in range(1, num_models):
+        target_idx = sorted_indices[i]
+        target_params = sorted_params[i]
+        
+        if not silent:
+            print(f"\nMatching model {target_idx} (size={sorted_sizes[i]}) to smallest")
+        
+        perm = weight_matching(
+            ps=ps,
+            params_a=smallest_params,  # small reference
+            params_b=target_params,     # large target
+            permute_mode=permute_mode,
+            match_mode='E',
+            max_iter=max_iter,
+            silent=silent
+        )
+        final_perms[target_idx] = perm
+    
+    # Step 3: Hierarchical refinement for additional neurons
+    # Find unique size tiers (excluding smallest which is already done)
+    unique_sizes = sorted(set(sorted_sizes[1:]))
+    
+    for tier_idx, tier_size in enumerate(unique_sizes):
+        # Find the smallest model in this tier (2nd smallest, 3rd smallest, etc.)
+        ref_model_idx_in_sorted = None
+        for i in range(1, num_models):
+            if sorted_sizes[i] == tier_size:
+                ref_model_idx_in_sorted = i
+                break
+        
+        if ref_model_idx_in_sorted is None:
+            continue
+        
+        # Get the previous tier size (reference for base neurons)
+        prev_tier_size = sorted_sizes[ref_model_idx_in_sorted - 1]
+        
+        # Additional neurons: indices from prev_tier_size to tier_size
+        num_additional = tier_size - prev_tier_size
+        
+        if num_additional == 0:
+            if not silent:
+                print(f"\n=== Stage {tier_idx + 2}: Tier size {tier_size} has no additional neurons ===")
+            continue
+        
+        if not silent:
+            print(f"\n=== Stage {tier_idx + 2}: Refining additional neurons (indices {prev_tier_size}:{tier_size}) ===")
+            print(f"Reference: model {sorted_indices[ref_model_idx_in_sorted]} (size={tier_size})")
+        
+        # Reference model for this tier
+        ref_params = sorted_params[ref_model_idx_in_sorted]
+        ref_orig_idx = sorted_indices[ref_model_idx_in_sorted]
+        
+        # Match all larger models' additional neurons
+        for i in range(ref_model_idx_in_sorted + 1, num_models):
+            if sorted_sizes[i] <= tier_size:
+                continue  # Skip same-size models
+            
+            target_idx = sorted_indices[i]
+            target_params = sorted_params[i]
+            
+            if not silent:
+                print(f"  Refining model {target_idx} (size={sorted_sizes[i]})")
+            
+            # Create partial permutation matching only for additional neurons
+            additional_perm = _match_additional_neurons(
+                ps=ps,
+                ref_params=ref_params,
+                target_params=target_params,
+                base_ref_perm=final_perms[ref_orig_idx],
+                base_target_perm=final_perms[target_idx],
+                start_idx=prev_tier_size,
+                end_idx=tier_size,
+                permute_mode=permute_mode,
+                max_iter=max_iter,
+                silent=silent
+            )
+            
+            # Merge with existing permutation
+            final_perms[target_idx] = _merge_permutations(
+                final_perms[target_idx],
+                additional_perm,
+                start_idx=prev_tier_size,
+                end_idx=tier_size
+            )
+    
+    return final_perms
+
+def _match_additional_neurons(ps, ref_params, target_params, base_ref_perm, base_target_perm,
+                               start_idx, end_idx, permute_mode, max_iter, silent):
+    """
+    Match only the additional neurons (indices start_idx:end_idx) between reference and target.
+    
+    Returns partial permutation for the additional neurons only.
+    """
+    perm_names = list(ps.perm_to_axes.keys())
+    partial_perm = {}
+    
+    for p in perm_names:
+        wk, axis = ps.perm_to_axes[p][0]
+        
+        # Extract the additional neurons region
+        # Reference model: neurons at indices [start_idx:end_idx]
+        # Target model: all neurons at indices [start_idx:] (we'll permute within this range)
+        
+        ref_size = ref_params[wk].shape[axis]
+        target_size = target_params[wk].shape[axis]
+        
+        if ref_size < end_idx or target_size < end_idx:
+            # Not enough neurons in this layer, skip
+            partial_perm[p] = torch.arange(target_size)
+            continue
+        
+        num_ref_additional = end_idx - start_idx
+        num_target_additional = target_size - start_idx
+        
+        if num_target_additional <= 0 or num_ref_additional <= 0:
+            partial_perm[p] = torch.arange(target_size)
+            continue
+        
+        # Build cost matrix for additional neurons only
+        cost_matrix = torch.zeros(num_ref_additional, num_target_additional)
+        
+        for wk, axis in ps.perm_to_axes[p]:
+            # Get full weights
+            w_ref_full = get_permuted_param(ps, base_ref_perm, wk, ref_params)
+            w_target_full = get_permuted_param(ps, base_target_perm, wk, target_params)
+            
+            # Extract additional neuron slices
+            # For axis dimension: take [start_idx:end_idx] for ref, [start_idx:] for target
+            # For other dimensions: match to ref size (crop if needed)
+            
+            ref_slices = [slice(None)] * w_ref_full.ndim
+            ref_slices[axis] = slice(start_idx, end_idx)
+            w_ref = w_ref_full[tuple(ref_slices)]
+            
+            target_slices = [slice(None)] * w_target_full.ndim
+            target_slices[axis] = slice(start_idx, None)
+            w_target = w_target_full[tuple(target_slices)]
+            
+            # Crop target to match ref's non-axis dimensions
+            crop_slices = [slice(0, w_ref.shape[d]) if d != axis else slice(None) 
+                          for d in range(w_target.ndim)]
+            w_target = w_target[tuple(crop_slices)]
+            
+            # Compute similarity
+            w_ref_flat = w_ref.movedim(axis, 0).reshape(w_ref.shape[axis], -1)
+            w_target_flat = w_target.movedim(axis, 0).reshape(w_target.shape[axis], -1)
+            
+            dot_product = w_ref_flat @ w_target_flat.T
+            
+            if permute_mode == 'M':
+                cost = dot_product
+            elif permute_mode == 'Z':
+                cost = -torch.abs(dot_product)
+            else:
+                raise ValueError(f"Unknown PERMUTE mode: {permute_mode}")
+            
+            cost_matrix += cost
+        
+        # Solve assignment for additional neurons
+        ri, ci = linear_sum_assignment(cost_matrix.numpy(), maximize=True)
+        
+        # Map back to global indices
+        # ri are indices in [0, num_ref_additional), corresponding to [start_idx, end_idx)
+        # ci are indices in [0, num_target_additional), corresponding to [start_idx, target_size)
+        global_ci = ci + start_idx
+        
+        # Create partial permutation: only specify mapping for indices [start_idx:target_size]
+        # Indices [0:start_idx] keep their current mapping
+        partial_perm[p] = torch.from_numpy(global_ci).long()
+    
+    return partial_perm
+
+def _merge_permutations(base_perm, partial_perm, start_idx, end_idx):
+    """
+    Merge partial permutation into base permutation.
+    
+    For indices [start_idx:end_idx], update the permutation based on partial_perm.
+    Keep other indices unchanged.
+    """
+    merged_perm = {}
+    
+    for p in base_perm.keys():
+        base = base_perm[p].clone()
+        partial = partial_perm[p]
+        
+        # The partial permutation maps additional neurons
+        # We need to update base[start_idx:] with the new mapping from partial
+        
+        # Current mapping of indices [start_idx:] in base
+        current_mapping = base[start_idx:].clone()
+        
+        # partial contains new indices for [start_idx:], but we need to remap them
+        # partial[i] is the NEW position for the neuron currently at position (start_idx + i)
+        
+        # Actually, partial_perm from _match_additional_neurons returns global indices
+        # So we can directly use them
+        new_mapping = partial
+        
+        # Replace the tail of base permutation
+        base[start_idx:start_idx + len(new_mapping)] = new_mapping
+        
+        merged_perm[p] = base
+    
+    return merged_perm
 
 def get_model_params_as_dict(model):
     """Converts a PyTorch model's state_dict to a flattened dictionary."""
