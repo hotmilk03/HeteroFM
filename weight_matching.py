@@ -171,6 +171,11 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
     In Extension mode (E): params_a is the larger reference model
     In Contraction mode (C): params_a is the smaller reference model
     """
+    # Reduce max_iter for Sinkhorn to prevent timeout
+    # Hungarian typically converges in 5-10 iterations
+    # Sinkhorn GD needs more but we cap it for practical reasons
+    if config.SINKHORN:
+        max_iter = min(max_iter, getattr(config, 'SINKHORN_MAX_ITER', 20))
     # Validate dimensions based on match_mode
     if match_mode == 'C':
         # Contraction: params_a should be smaller or equal
@@ -355,6 +360,7 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
     lambd_sink = getattr(config, "SINKHORN_LAMBDA", 1.0)
     
     prev_loss = float('inf')
+    no_improvement_count = 0  # Track consecutive iterations without improvement
     for iteration in range(max_iter):
         optimizer.zero_grad()
         
@@ -381,14 +387,19 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
         for p in perm_names:
             for wk, axis in ps.perm_to_axes[p]:
                 w_a = params_a[wk].detach().clone()
-                w_b_permuted = get_permuted_param(ps, soft_perms, wk, params_b, except_axis=axis)
+                # CRITICAL: Use ORIGINAL params_b, not pre-permuted
+                # In Sinkhorn, we optimize P_soft directly via gradient descent
+                # Applying get_permuted_param would double-apply the soft permutation
+                # The coupling between different permutations is handled implicitly
+                # through the joint optimization of all P_matrices
+                w_b = params_b[wk]
                 
                 # Define valid region slice: keep 'axis' full, crop others to A's size
                 slices = [slice(0, w_a.shape[d]) if d != axis else slice(None) for d in range(w_a.ndim)]
                 
                 if match_mode == 'C':
-                    # Cut B to match A's dimensions
-                    w_b_permuted = w_b_permuted[tuple(slices)]
+                    # Cut B to match A's dimensions  
+                    w_b = w_b[tuple(slices)]
                 elif match_mode == 'E':
                     # Extension mode: A is large (reference), B is small (target)
                     # We need to extend B to match A's non-axis dimensions for proper comparison
@@ -396,21 +407,21 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
                     
                     # Create extended version of B with A's dimensions on non-axis dims
                     extended_shape = list(w_a.shape)
-                    extended_shape[axis] = w_b_permuted.shape[axis]  # Keep B's axis size
+                    extended_shape[axis] = w_b.shape[axis]  # Keep B's axis size
                     
                     # Initialize with zeros
-                    w_b_extended = torch.zeros(extended_shape, dtype=w_b_permuted.dtype, device=w_b_permuted.device)
+                    w_b_extended = torch.zeros(extended_shape, dtype=w_b.dtype, device=w_b.device)
                     
                     # Copy B's data into the extended tensor
-                    slices_copy = [slice(0, w_b_permuted.shape[d]) for d in range(w_b_permuted.ndim)]
-                    w_b_extended[tuple(slices_copy)] = w_b_permuted
+                    slices_copy = [slice(0, w_b.shape[d]) for d in range(w_b.ndim)]
+                    w_b_extended[tuple(slices_copy)] = w_b
                     
                     # Use extended version for comparison
-                    w_b_permuted = w_b_extended
+                    w_b = w_b_extended
                 
                 # Align axes for dot product - same as original weight_matching
                 w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
-                w_b_flat = w_b_permuted.movedim(axis, 0).reshape(w_b_permuted.shape[axis], -1)
+                w_b_flat = w_b.movedim(axis, 0).reshape(w_b.shape[axis], -1)
                 
                 # Compute similarity matrix (not scalar!) for proper gradient flow
                 # This creates a (size_a, size_b) matrix where each entry is similarity between neuron pairs
@@ -439,13 +450,20 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
             print(f"Sinkhorn GD Iteration {iteration}: Loss {total_loss.item():.4f}")
         
         # Early stopping: check if loss is not changing significantly
-        # Use more aggressive early stopping to prevent NCCL timeout
+        # More aggressive stopping for practical performance
         if iteration > 0:
             loss_change = abs(total_loss.item() - prev_loss)
             relative_change = loss_change / (abs(prev_loss) + 1e-10)
             
             # Stop if either absolute or relative change is very small
-            if loss_change < 1e-5 or relative_change < 1e-5:
+            # Relaxed threshold from 1e-5 to 1e-4 for faster stopping
+            if loss_change < 1e-4 or relative_change < 1e-4:
+                no_improvement_count += 1
+            else:
+                no_improvement_count = 0
+            
+            # Stop after 3 consecutive iterations without significant improvement
+            if no_improvement_count >= 3:
                 if config.PERM_WARNING:
                     print(f"  Sinkhorn converged at iteration {iteration} (loss_change: {loss_change:.2e}, relative: {relative_change:.2e})")
                 break
