@@ -69,6 +69,8 @@ def run_client_gpu(args):
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
 
+    print(f"run_client_gpu client size arg : {client_size_ratio}")
+
     try:
         client_state, size_ratio, metrics = federated.client_update(
             client_loader=client_loader,
@@ -86,6 +88,7 @@ def run_client_gpu(args):
             weight_decay=weight_decay,
             device=device
         )
+
         return client_state, size_ratio, metrics
 
     except Exception as e:
@@ -392,6 +395,7 @@ def main():
             with ThreadPoolExecutor(max_workers=num_gpus if num_gpus > 0 else 1) as executor:
                 tasks = []
                 for idx, i in enumerate(assigned_clients):
+                    print(f"idx, i, W_CLIENT[i] {idx}, {i}, {config.W_CLIENT[i]}")
                     gpu_index = idx % num_gpus if num_gpus > 0 else 0  # Cycle through local GPUs
                     scaler_rate = config.W_CLIENT[i] / config.MAX_W
                     label_split = label_splits.get(i)
@@ -420,124 +424,26 @@ def main():
                     client_contributions.append((client_state, client_size))
                     client_metrics.append(metrics)
             
-            # Gather contributions using all_gather for better performance
-            # Step 1: Flatten state_dicts to tensors
-            def state_dict_to_tensor(state_dict):
-                """Flatten state_dict to a single 1D tensor"""
-                tensors = []
-                for key in sorted(state_dict.keys()):
-                    tensors.append(state_dict[key].flatten())
-                return torch.cat(tensors)
+            # Gather contributions using broadcast_object_list for heterogeneous models
+            # Since each client has different model size, we directly transmit state_dict
+            # instead of flattening (which would lose shape information)
             
-            def tensor_to_state_dict(flat_tensor, reference_state_dict):
-                """Restore state_dict from flattened tensor"""
-                state_dict = {}
-                offset = 0
-                for key in sorted(reference_state_dict.keys()):
-                    param_shape = reference_state_dict[key].shape
-                    param_numel = reference_state_dict[key].numel()
-                    state_dict[key] = flat_tensor[offset:offset+param_numel].reshape(param_shape)
-                    offset += param_numel
-                return state_dict
-            
-            # Prepare local contributions as tensors
-            # NCCL requires CUDA tensors, so we keep them on GPU
-            comm_device = torch.device(f'cuda:{local_rank}')
-            local_flat_tensors = []
-            local_sizes = []
-            for client_state, client_size in client_contributions:
-                flat = state_dict_to_tensor(client_state).to(comm_device)
-                local_flat_tensors.append(flat)
-                local_sizes.append(client_size)
-            
-            # Each rank sends number of clients it processed
-            num_local_clients = len(client_contributions)
-            num_clients_per_rank = [torch.zeros(1, dtype=torch.long, device=comm_device) for _ in range(world_size)]
-            dist.all_gather(num_clients_per_rank, torch.tensor([num_local_clients], dtype=torch.long, device=comm_device))
-            num_clients_per_rank = [int(x.item()) for x in num_clients_per_rank]
-            
-            # Determine max tensor size across all ranks
-            if local_flat_tensors:
-                local_max_size = max(t.numel() for t in local_flat_tensors)
-            else:
-                local_max_size = 0
-            max_size_tensor = torch.tensor([local_max_size], dtype=torch.long, device=comm_device)
-            max_sizes = [torch.zeros(1, dtype=torch.long, device=comm_device) for _ in range(world_size)]
-            dist.all_gather(max_sizes, max_size_tensor)
-            global_max_size = max(int(x.item()) for x in max_sizes)
-            
-            # Concatenate all local tensors into one big tensor
-            if num_local_clients > 0:
-                # Stack all local tensors (pad to same size first)
-                padded_locals = []
-                for t in local_flat_tensors:
-                    padded = torch.zeros(global_max_size, device=comm_device)
-                    padded[:t.numel()] = t
-                    padded_locals.append(padded)
-                # Shape: [num_local_clients, global_max_size]
-                stacked_local = torch.stack(padded_locals)
-            else:
-                stacked_local = torch.zeros(1, global_max_size, device=comm_device)
-            
-            # Gather sizes for all clients from this rank
-            local_sizes_tensor = torch.tensor(local_sizes if local_sizes else [0.0], device=comm_device)
-            
-            # All-gather stacked tensors - each rank sends all its clients at once
-            max_clients = max(num_clients_per_rank)
-            gathered_all = []
-            gathered_sizes_all = []
-            
-            for r in range(world_size):
-                num_clients_r = num_clients_per_rank[r]
-                recv_tensor = torch.zeros(num_clients_r, global_max_size, device=comm_device)
-                recv_sizes = torch.zeros(num_clients_r, device=comm_device)
-                gathered_all.append(recv_tensor)
-                gathered_sizes_all.append(recv_sizes)
-            
-            # Broadcast from each rank in turn
-            for src_rank in range(world_size):
-                if rank == src_rank:
-                    send_data = stacked_local[:num_local_clients] if num_local_clients > 0 else torch.zeros(0, global_max_size, device=comm_device)
-                    send_sizes = local_sizes_tensor[:num_local_clients] if num_local_clients > 0 else torch.zeros(0, device=comm_device)
-                else:
-                    send_data = None
-                    send_sizes = None
-                
-                # Broadcast using object list for variable sizes
-                obj_list = [send_data if rank == src_rank else None]
-                dist.broadcast_object_list(obj_list, src=src_rank)
-                if rank != src_rank:
-                    gathered_all[src_rank] = obj_list[0].to(comm_device) if obj_list[0] is not None else torch.zeros(0, global_max_size, device=comm_device)
-                else:
-                    gathered_all[src_rank] = send_data
-                
-                size_list = [send_sizes if rank == src_rank else None]
-                dist.broadcast_object_list(size_list, src=src_rank)
-                if rank != src_rank:
-                    gathered_sizes_all[src_rank] = size_list[0].to(comm_device) if size_list[0] is not None else torch.zeros(0, device=comm_device)
-                else:
-                    gathered_sizes_all[src_rank] = send_sizes
-            
-            # Rank 0 reconstructs all client states
-            if rank == 0:
-                all_client_states = []
-                all_client_sizes = []
-                for r in range(world_size):
-                    for i in range(num_clients_per_rank[r]):
-                        # Move to CPU and restore state dict
-                        flat_tensor = gathered_all[r][i].cpu()
-                        restored_state = tensor_to_state_dict(flat_tensor, global_model_state_cpu)
-                        all_client_states.append(restored_state)
-                        all_client_sizes.append(float(gathered_sizes_all[r][i].item()))
+            # Collect all contributions from all ranks using broadcast_object_list
+            all_contributions = [None for _ in range(world_size)]
+            dist.all_gather_object(all_contributions, client_contributions)
             
             # Use all_gather_object only for lightweight metrics
             all_metrics = [None for _ in range(world_size)]
             dist.all_gather_object(all_metrics, client_metrics)
             
             if rank == 0:
-                client_contributions = [(all_client_states[i], all_client_sizes[i]) 
-                                       for i in range(len(all_client_states))]
+                # Flatten the list of lists
+                client_contributions = [item for sublist in all_contributions for item in sublist]
                 client_metrics = [item for sublist in all_metrics for item in sublist]
+                
+                print(f"[DEBUG - After gathering] Total client_contributions: {len(client_contributions)}")
+                for idx, (state, size) in enumerate(client_contributions):
+                    print(f"[DEBUG - client {idx}] features.0.weight shape={state['features.0.weight'].shape}, size={size}")
             
             # Sync before aggregation
             dist.barrier()
@@ -547,6 +453,9 @@ def main():
             agg_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
             if config.REARRANGE:
                 print("--- Aggregating with rearrangement ---")
+                print(f"[DEBUG 13 - Before aggregate_rearrange] client_contributions length={len(client_contributions)}")
+                for idx, (state, size) in enumerate(client_contributions):
+                    print(f"[DEBUG 13 - client {idx}] features.0.weight shape={state['features.0.weight'].shape}, size={size}")
                 global_model_state = federated.aggregate_rearrange(
                     global_model.state_dict(), client_contributions, device=agg_device
                 )
