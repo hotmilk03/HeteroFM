@@ -73,7 +73,7 @@ USE_AMP = True
 MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
 
-USE_MASKED_LOSS = True
+USE_MASKED_LOSS = False
 NUM_WORKERS = 1 # only 1 OK
 
 # =============================================================================
@@ -85,11 +85,11 @@ PERMUTE = 'M' # 'Z' for zeroing, 'M' for maximizing
 MATCH = 'E' # 'C' for contraction, 'E' for extension
 
 SINKHORN = False
-SINKHORN_MAX_ITER = 50  # Maximum GD iterations (50-100 needed for Hungarian parity, was 10)
-SINKHORN_NUM_ITER = 50  # Number of Sinkhorn-Knopp iterations per GD step
+SINKHORN_MAX_ITER = 50  # Maximum GD iterations (50-100 needed for Hungarian parity)
+SINKHORN_NUM_ITER = 20  # Number of Sinkhorn-Knopp iterations per GD step
 SINKHORN_LAMBDA = 1.0
 SINKHORN_LR = 1.0  # Learning rate for gradient descent optimization # 0.1 or 1.0
-SINKHORN_SCALING = 1.0  # Cost scaling factor (matches symmnet.py: self.l)
+SINKHORN_SCALING = 1.0  # Cost scaling factor
 
 # =============================================================================
 # PRINTING OPTIONS
@@ -98,5 +98,4 @@ SINKHORN_SCALING = 1.0  # Cost scaling factor (matches symmnet.py: self.l)
 SILENT = True
 PERM_WARNING = True
 CLIENT_EVAL = True
-DRAW_ALL = True # TODO : draw clients' acc/loss range in graph
 DRAW = 'loss' # 'acc' or 'loss'

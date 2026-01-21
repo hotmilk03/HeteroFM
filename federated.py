@@ -5,6 +5,7 @@ import copy
 from model import init_model
 from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, vgg_permutation_spec, resnet50_permutation_spec, weight_matching, apply_permutation
 import config
+import time
 
 def evaluate(model, test_loader, device):
     """
@@ -27,26 +28,38 @@ def evaluate(model, test_loader, device):
     accuracy = 100. * correct / len(test_loader.dataset)
     return test_loss, accuracy
 
-def client_update(client_loader, test_loader, local_test_loader, global_model_state, client_size_ratio, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device):
-    # Create a local model with the client's specific size
-    local_model = init_model(client_size_ratio, scaler_rate).to(device)
-    local_model_state = local_model.state_dict()
+def client_update(client_loader, test_loader, local_test_loader, global_model_state, client_size_ratio, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device, previous_client_state=None):
+    # Initialize local model state from previous round or create fresh weights
+    # Assumption: client model shape remains constant across rounds
+    if previous_client_state is not None:
+        # Use previous round's state (preserves non-overlapping weights when local > global)
+        local_model_state = copy.deepcopy(previous_client_state)
+    else:
+        # First round: initialize with fresh random weights from init_model
+        local_model = init_model(client_size_ratio, scaler_rate).to(device)
+        local_model_state = local_model.state_dict()
+    
     use_amp = bool(config.USE_AMP) and device.type == 'cuda'
     scaler = torch.amp.GradScaler('cuda', enabled=use_amp)
     
-    # Slice the global model's state to fit the local model
+    # Overwrite overlapping regions with global model weights
     for key in local_model_state:
         if key in global_model_state:
             global_param = global_model_state[key]
             global_shape = global_model_state[key].shape
             local_shape = local_model_state[key].shape
             
+            # Copy only the overlapping region from global model
             slices = [slice(0, min(global_dim, local_dim)) for global_dim, local_dim in zip(global_shape, local_shape)]
             slices_tuple = tuple(slices)
             
             local_model_state[key][slices_tuple] = global_param[slices_tuple].clone()
     
+    # Load the state into a model instance for training
+    local_model = init_model(client_size_ratio, scaler_rate).to(device)
     local_model.load_state_dict(local_model_state)
+
+    prev_test_loss, prev_test_acc = evaluate(local_model, test_loader, device)
     
     optimizer = optim.SGD(local_model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
@@ -83,14 +96,11 @@ def client_update(client_loader, test_loader, local_test_loader, global_model_st
         # Evaluation on Global test_loader
         global_test_loss, global_test_acc = evaluate(local_model, test_loader, device)
 
-        # Evaluation on Local test_loader (specific classes)
-        local_test_loss, local_test_acc = evaluate(local_model, local_test_loader, device)
-
         metrics = {
             'loss': global_test_loss,
             'accuracy': global_test_acc,
-            'local_loss': local_test_loss,
-            'local_accuracy': local_test_acc
+            'prev_loss': prev_test_loss,
+            'prev_accuracy': prev_test_acc
         }
 
         # Move weights back to CPU before freeing CUDA memory
@@ -152,7 +162,7 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
     if not client_contributions:
         return global_model_state
 
-    # 1. Find the reference client (smallest model)
+    # Find the reference client (smallest model)
     target_size_ratio = float('inf')
     ref_client_state = None
     for state, size_ratio in client_contributions:
@@ -163,8 +173,6 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
     if ref_client_state is None:
         # This should not happen if client_contributions is not empty
         return global_model_state
-
-    # print(f"\n--- Rearranging models based on reference model (size: {target_size_ratio}, mode: {config.MATCH}) ---")
 
     # Define permutation spec for the model
     if config.MODEL == 'mlp2':
@@ -177,7 +185,7 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
         ps = resnet50_permutation_spec()
     else:
         raise ValueError(f"No permutation spec defined for model: {config.MODEL}")
-        
+    
     params_a = ref_client_state  # Reference for permutation
 
     permuted_client_contributions = []
@@ -203,7 +211,6 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
                     print(f"Layer {key}: params_a shape = {params_a[key].shape}, params_b shape = {params_b[key].shape}")
         
         # Find the permutation that aligns params_b with params_a (the reference model)
-        import time
         start_time = time.time()
         perm = weight_matching(
             ps, 
@@ -235,7 +242,7 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
         permuted_client_contributions.append((permuted_params_b, client_size_ratio))
         # print(f"Finished rearranging client model with size {client_size}.")
 
-    # 2. Aggregate the permuted models on GPU
+    # Aggregate the permuted models on GPU
     agg_state = copy.deepcopy(global_model_state)
     count_state = copy.deepcopy(global_model_state)
     for key in agg_state:

@@ -1,7 +1,6 @@
 from datetime import timedelta
 import os
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
 import time
@@ -9,7 +8,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 import numpy as np
-import pickle
+import argparse
 
 import config
 import data
@@ -35,7 +34,6 @@ def _init_distributed():
         master_port = os.environ.get("MASTER_PORT")
         if master_addr is None or master_port is None:
             # Fallback: on SLURM, use first hostname
-            # NOTE: if this fails, user should set MASTER_ADDR/MASTER_PORT
             master_addr = master_addr or "127.0.0.1"
             master_port = master_port or "29500"
 
@@ -44,7 +42,8 @@ def _init_distributed():
 
         backend = "nccl" if torch.cuda.is_available() else "gloo"
 
-        print(f"[Rank {rank}] Master: {master_addr}:{master_port}, World Size: {world_size}")
+        if not config.SILENT:
+            print(f"[Rank {rank}] Master: {master_addr}:{master_port}, World Size: {world_size}")
         
         dist.init_process_group(
             backend=backend, 
@@ -54,7 +53,8 @@ def _init_distributed():
             timeout=timedelta(minutes=60)
         )
         
-        print(f"[Rank {rank}] Process group initialized successfully")
+        if not config.SILENT:
+            print(f"[Rank {rank}] Process group initialized successfully")
 
         # Set device to local_rank if CUDA
         if torch.cuda.is_available():
@@ -64,7 +64,7 @@ def _init_distributed():
     return False, 0, 1, 0
 
 def run_client_gpu(args):
-    client_id, gpu_index, global_state, client_loader, test_loader, client_test_loader, client_size_ratio, scaler_rate, label_split, use_masked_loss, learning_rate, momentum, weight_decay, grad_clip_norm = args
+    client_id, gpu_index, global_state, client_loader, test_loader, client_test_loader, client_size_ratio, scaler_rate, label_split, use_masked_loss, learning_rate, momentum, weight_decay, grad_clip_norm, previous_client_state = args
     device = torch.device(f'cuda:{gpu_index}')
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
@@ -84,7 +84,8 @@ def run_client_gpu(args):
             grad_clip_norm=grad_clip_norm,
             momentum=momentum,
             weight_decay=weight_decay,
-            device=device
+            device=device,
+            previous_client_state=previous_client_state
         )
         return client_state, size_ratio, metrics
 
@@ -138,7 +139,6 @@ def print_info(label_splits):
 
 def parse_args():
     """Parse command line arguments to override config values"""
-    import argparse
     parser = argparse.ArgumentParser(description='HeteroFM Federated Learning')
     
     # Model parameters
@@ -254,7 +254,7 @@ def main():
         print(f"[Rank {rank}/{world_size}] Local GPUs: {num_gpus}")
     print(f"Number of available GPUs (visible to this process): {num_gpus}\n")
 
-    server_device = torch.device("cpu") # TODO : move to gpu
+    server_device = torch.device("cpu")
     if config.REARRANGE:
         if config.MATCH == 'C':
             global_model = model.init_model(config.MIN_W).to(server_device)
@@ -276,7 +276,8 @@ def main():
     # Data preparation
     if is_dist:
         # Distributed mode: rank 0 computes indices, broadcast to all ranks
-        print(f"[Rank {rank}] Preparing data in distributed mode...")
+        if not config.SILENT:
+            print(f"[Rank {rank}] Preparing data in distributed mode...")
         
         # All ranks create dataset instance (lightweight)
         dataset = data.Dataset(config.DATA_SET, config.DATA_DIR)
@@ -289,7 +290,8 @@ def main():
                 n_classes_ratio=config.NON_IID_CLASSES_RATIO_PER_CLIENT
             )
             data_split_info = [{'indices': client_indices_map, 'labels': label_splits}]
-            print(f"[Rank 0] Broadcasting client indices to all ranks...")
+            if not config.SILENT:
+                print(f"[Rank 0] Broadcasting client indices to all ranks...")
         else:
             data_split_info = [None]
         
@@ -300,7 +302,9 @@ def main():
         
         # Each rank determines its assigned clients
         assigned_clients = [i for i in range(config.NUM_CLIENTS) if (i % world_size) == rank]
-        print(f"[Rank {rank}] Creating DataLoaders for assigned clients {assigned_clients}...")
+        
+        if not config.SILENT:
+            print(f"[Rank {rank}] Creating DataLoaders for assigned clients {assigned_clients}...")
         
         # Each rank creates DataLoaders ONLY for its assigned clients
         client_loaders, client_test_loaders, test_loader = dataset.create_dataloaders(
@@ -314,7 +318,8 @@ def main():
         dist.barrier()
     else:
         # Single process mode
-        print("Preparing data on single process...")
+        if not config.SILENT:
+            print("Preparing data on single process...")
         dataset = data.Dataset(config.DATA_SET, config.DATA_DIR)
         client_loaders, client_test_loaders, test_loader, label_splits = dataset.prepare_data(
             config.NUM_CLIENTS,
@@ -324,8 +329,13 @@ def main():
         )
 
     # Federated Training Loop
-    print("Starting Federated Training...\n")
+    if not config.SILENT:
+        print("Starting Federated Training...\n")
     start_time = time.time()
+
+    # Initialize dictionary to store each client's state across rounds
+    # Key: client_id, Value: client state dict
+    previous_client_states = {}
 
     # init evaluation before training (only on rank 0)
     comm_round = 0
@@ -359,6 +369,9 @@ def main():
                     gpu_index = i % num_gpus if num_gpus > 0 else 0
                     scaler_rate = config.W_CLIENT[i] / config.MAX_W
                     label_split = label_splits.get(i)
+                    
+                    # Get previous client state if it exists
+                    previous_state = previous_client_states.get(i, None)
 
                     args = (
                         i,
@@ -374,13 +387,14 @@ def main():
                         current_lr,
                         config.MOMENTUM,
                         config.WEIGHT_DECAY,
-                        config.GRAD_CLIP_NORM
+                        config.GRAD_CLIP_NORM,
+                        previous_state
                     )
                     tasks.append(args)
 
                 futures = [executor.submit(run_client_gpu, task) for task in tasks]
 
-                for future in as_completed(futures):
+                for idx, future in enumerate(as_completed(futures)):
                     client_state, client_size, metrics = future.result()
                     client_contributions.append((client_state, client_size))
                     client_metrics.append(metrics)
@@ -395,6 +409,10 @@ def main():
                     gpu_index = idx % num_gpus if num_gpus > 0 else 0  # Cycle through local GPUs
                     scaler_rate = config.W_CLIENT[i] / config.MAX_W
                     label_split = label_splits.get(i)
+                    
+                    # Get previous client state if it exists
+                    previous_state = previous_client_states.get(i, None)
+                    
                     args = (
                         i,
                         gpu_index,
@@ -409,7 +427,8 @@ def main():
                         current_lr,
                         config.MOMENTUM,
                         config.WEIGHT_DECAY,
-                        config.GRAD_CLIP_NORM
+                        config.GRAD_CLIP_NORM,
+                        previous_state
                     )
                     tasks.append(args)
                 
@@ -436,14 +455,20 @@ def main():
             # Sync before aggregation
             dist.barrier()
 
+        # Update previous_client_states with the current round's results
+        # This needs to be done before aggregation so we have it for next round
+        if not is_dist or (is_dist and rank == 0):
+            for idx, (client_state, client_size) in enumerate(client_contributions):
+                previous_client_states[idx] = copy.deepcopy(client_state)
+
         # Server aggregation phase
         if not is_dist or (is_dist and rank == 0):
             agg_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
             if config.REARRANGE:
                 print("--- Aggregating with rearrangement ---")
-                print(f"[DEBUG 13 - Before aggregate_rearrange] client_contributions length={len(client_contributions)}")
-                for idx, (state, size) in enumerate(client_contributions):
-                    print(f"[DEBUG 13 - client {idx}] features.0.weight shape={state['features.0.weight'].shape}, size={size}")
+                # print(f"[DEBUG - Before aggregate_rearrange] client_contributions length={len(client_contributions)}")
+                # for idx, (state, size) in enumerate(client_contributions):
+                #     print(f"[DEBUG - client {idx}] features.0.weight shape={state['features.0.weight'].shape}, size={size}")
                 global_model_state = federated.aggregate_rearrange(
                     global_model.state_dict(), client_contributions, device=agg_device
                 )
@@ -462,8 +487,7 @@ def main():
 
         global_model.load_state_dict(global_model_state)
         
-        # Note: In federated learning, we don't use optimizer.step() on global model
-        # The aggregation itself serves as the update step
+        # no optimizer.step() on global model
         # scheduler.step() updates learning rate for next round
         scheduler.step()
 
@@ -483,26 +507,26 @@ def main():
             # Log Client Metrics
             losses = [m['loss'] for m in client_metrics]
             accs = [m['accuracy'] for m in client_metrics]
-            local_losses = [m['local_loss'] for m in client_metrics]
-            local_accs = [m['local_accuracy'] for m in client_metrics]
+            prev_losses = [m['prev_loss'] for m in client_metrics]
+            prev_accs = [m['prev_accuracy'] for m in client_metrics]
             
             print("  - Client Global Accuracy: Min: {:.2f}%, Max: {:.2f}%, Mean: {:.2f}%".format(
                 np.min(accs), np.max(accs), np.mean(accs)))
             print("  - Client Global Loss:     Min: {:.4f}, Max: {:.4f}, Mean: {:.4f}".format(
                 np.min(losses), np.max(losses), np.mean(losses)))
                 
-            print("  - Client Local Accuracy:  Min: {:.2f}%, Max: {:.2f}%, Mean: {:.2f}%".format(
-                np.min(local_accs), np.max(local_accs), np.mean(local_accs)))
-            print("  - Client Local Loss:      Min: {:.4f}, Max: {:.4f}, Mean: {:.4f}".format(
-                np.min(local_losses), np.max(local_losses), np.mean(local_losses)))
+            print("  - Client Prev Accuracy:  Min: {:.2f}%, Max: {:.2f}%, Mean: {:.2f}%".format(
+                np.min(prev_accs), np.max(prev_accs), np.mean(prev_accs)))
+            print("  - Client Prev Loss:      Min: {:.4f}, Max: {:.4f}, Mean: {:.4f}".format(
+                np.min(prev_losses), np.max(prev_losses), np.mean(prev_losses)))
 
             # Optional: Print detail for each client if not too many
             print("  - Client Details:")
             for i, m in enumerate(client_metrics):
                 print(f"    Client {i}: Acc: {m['accuracy']:6.2f}%, Loss: {m['loss']:.4f}")
-            print("  - Client Local Details:")
+            print("  - Client Prev Details:")
             for i, m in enumerate(client_metrics):
-                print(f"    Client {i}: Local Acc: {m['local_accuracy']:6.2f}%, Local Loss: {m['local_loss']:.4f}")
+                print(f"    Client {i}: Prev Acc: {m['prev_accuracy']:6.2f}%, Prev Loss: {m['prev_loss']:.4f}")
 
         # Proactively release CUDA caches between rounds to avoid fragmentation across clients.
         if torch.cuda.is_available():
