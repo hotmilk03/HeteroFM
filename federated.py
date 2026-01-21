@@ -152,27 +152,13 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
     if not client_contributions:
         return global_model_state
 
-    # 1. Find the reference client based on MATCH mode
-    if config.MATCH == 'E':
-        # Extension mode: Use the largest client as reference
-        # This aligns with global model being MAX_W size
-        target_size_ratio = float('-inf')
-        ref_client_state = None
-        for state, size_ratio in client_contributions:
-            if size_ratio > target_size_ratio:
-                target_size_ratio = size_ratio
-                ref_client_state = state
-    elif config.MATCH == 'C':
-        # Contraction mode: Use the smallest client as reference
-        # This aligns with global model being MIN_W size
-        target_size_ratio = float('inf')
-        ref_client_state = None
-        for state, size_ratio in client_contributions:
-            if size_ratio < target_size_ratio:
-                target_size_ratio = size_ratio
-                ref_client_state = state
-    else:
-        raise ValueError(f"Unknown MATCH mode: {config.MATCH}")
+    # 1. Find the reference client (smallest model)
+    target_size_ratio = float('inf')
+    ref_client_state = None
+    for state, size_ratio in client_contributions:
+        if size_ratio < target_size_ratio:
+            target_size_ratio = size_ratio
+            ref_client_state = state
     
     if ref_client_state is None:
         # This should not happen if client_contributions is not empty

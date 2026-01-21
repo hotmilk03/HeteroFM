@@ -184,11 +184,11 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
                    for d, p_name in enumerate(p_spec) if p_name is not None and k in params_a), \
                    "In Contraction mode, params_a (reference) must be the smaller model"
     elif match_mode == 'E':
-        # Extension: params_a should be larger or equal
-        assert all(params_a[k].shape[d] >= params_b[k].shape[d] 
+        # Extension: params_a should be smaller or equal (reference is smallest)
+        assert all(params_a[k].shape[d] <= params_b[k].shape[d] 
                    for k, p_spec in ps.axes_to_perm.items() 
                    for d, p_name in enumerate(p_spec) if p_name is not None and k in params_a), \
-                   "In Extension mode, params_a (reference) must be the larger model"
+                   "In Extension mode, params_a (reference) must be the smaller model"
     else:
         raise ValueError(f"Unknown match_mode: {match_mode}")
 
@@ -239,22 +239,25 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
                     w_b_permuted = w_b_permuted[tuple(slices)]
 
                 elif match_mode == 'E':
-                    # Extension mode: A is large (reference), B is small (target)
-                    # We need to extend B to match A's non-axis dimensions for proper comparison
+                    # Extension mode: A is small (reference), B is large (target)
+                    # We need to extend A to match B's non-axis dimensions for proper comparison
                     
-                    # Create extended version of B with A's dimensions on non-axis dims
-                    extended_shape = list(w_a.shape)
-                    extended_shape[axis] = w_b_permuted.shape[axis]  # Keep B's axis size
+                    # Create extended version of A with B's dimensions on non-axis dims
+                    extended_shape = list(w_b_permuted.shape)
+                    extended_shape[axis] = w_a.shape[axis]  # Keep A's axis size
                     
-                    # Initialize with zeros (or could use other strategies)
-                    w_b_extended = torch.zeros(extended_shape, dtype=w_b_permuted.dtype, device=w_b_permuted.device)
+                    # Initialize with B's values (copy padding from large model)
+                    w_a_extended = torch.zeros(extended_shape, dtype=w_b_permuted.dtype, device=w_b_permuted.device)
+                    # Copy B's values to initialize the extended tensor (up to extended_shape size)
+                    slices_b = [slice(0, min(extended_shape[d], w_b_permuted.shape[d])) for d in range(w_b_permuted.ndim)]
+                    w_a_extended[tuple(slices_b)] = w_b_permuted[tuple(slices_b)]
                     
-                    # Copy B's data into the extended tensor
-                    slices = [slice(0, w_b_permuted.shape[d]) for d in range(w_b_permuted.ndim)]
-                    w_b_extended[tuple(slices)] = w_b_permuted
+                    # Copy A's data into the extended tensor
+                    slices = [slice(0, w_a.shape[d]) for d in range(w_a.ndim)]
+                    w_a_extended[tuple(slices)] = w_a
                     
                     # Use extended version for comparison
-                    w_b_permuted = w_b_extended
+                    w_a = w_a_extended
 
                 # Align axes for dot product
                 w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
@@ -401,23 +404,25 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
                     # Cut B to match A's dimensions  
                     w_b = w_b[tuple(slices)]
                 elif match_mode == 'E':
-                    # Extension mode: A is large (reference), B is small (target)
-                    # We need to extend B to match A's non-axis dimensions for proper comparison
-                    # EXACTLY THE SAME AS HUNGARIAN VERSION
+                    # Extension mode: A is small (reference), B is large (target)
+                    # We need to extend A to match B's non-axis dimensions for proper comparison
                     
-                    # Create extended version of B with A's dimensions on non-axis dims
-                    extended_shape = list(w_a.shape)
-                    extended_shape[axis] = w_b.shape[axis]  # Keep B's axis size
+                    # Create extended version of A with B's dimensions on non-axis dims
+                    extended_shape = list(w_b.shape)
+                    extended_shape[axis] = w_a.shape[axis]  # Keep A's axis size
                     
-                    # Initialize with zeros
-                    w_b_extended = torch.zeros(extended_shape, dtype=w_b.dtype, device=w_b.device)
+                    # Initialize with B's values (copy padding from large model)
+                    w_a_extended = torch.zeros(extended_shape, dtype=w_b.dtype, device=w_b.device)
+                    # Copy B's values to initialize the extended tensor (up to extended_shape size)
+                    slices_b = [slice(0, min(extended_shape[d], w_b.shape[d])) for d in range(w_b.ndim)]
+                    w_a_extended[tuple(slices_b)] = w_b[tuple(slices_b)]
                     
-                    # Copy B's data into the extended tensor
-                    slices_copy = [slice(0, w_b.shape[d]) for d in range(w_b.ndim)]
-                    w_b_extended[tuple(slices_copy)] = w_b
+                    # Copy A's data into the extended tensor
+                    slices_copy = [slice(0, w_a.shape[d]) for d in range(w_a.ndim)]
+                    w_a_extended[tuple(slices_copy)] = w_a
                     
                     # Use extended version for comparison
-                    w_b = w_b_extended
+                    w_a = w_a_extended
                 
                 # Align axes for dot product - same as original weight_matching
                 w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
