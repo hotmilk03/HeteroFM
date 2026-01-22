@@ -2,15 +2,14 @@ import re
 import matplotlib.pyplot as plt
 import config
 
-def parse_log_and_plot(file_paths, label_names, title, output_image):
-    mode = getattr(config, 'DRAW', 'acc')  # 'acc' or 'loss'
-    
-    if mode == 'loss':
+def plot_single_metric(file_paths, label_names, title, output_image, mode_type):
+    """Plot a single metric (loss or acc) based on mode_type."""
+    if mode_type == 'loss':
         pattern_main = re.compile(r"Round\s+(\d+).*?Test Loss:\s+([\d\.]+)")
         pattern_range = re.compile(r"Client Global Loss:\s+Min:\s+([\d\.]+),\s+Max:\s+([\d\.]+)")
         ylabel_name = 'Test Loss'
         is_percentage = False
-    else:
+    else:  # 'acc'
         pattern_main = re.compile(r"Round\s+(\d+).*?Accuracy:\s+([\d\.]+)%")
         pattern_range = re.compile(r"Client Global Accuracy:\s+Min:\s+([\d\.]+)%,\s+Max:\s+([\d\.]+)%")
         ylabel_name = 'Accuracy'
@@ -104,40 +103,38 @@ def parse_log_and_plot(file_paths, label_names, title, output_image):
     plt.savefig(output_image)
     plt.clf()
 
+def parse_log_and_plot(file_paths, label_names, title, output_image):
+    mode = getattr(config, 'DRAW', 'all')  # 'acc' or 'loss' or 'all'
+    
+    # Determine output filenames
+    if isinstance(output_image, str):
+        base_name = output_image.rsplit('.', 1)[0] if '.' in output_image else output_image
+        loss_output = f"{base_name}_loss.png"
+        acc_output = f"{base_name}_acc.png"
+    else:
+        loss_output = 'loss.png'
+        acc_output = 'acc.png'
+
+    if mode == 'all':
+        # Generate both loss and acc plots        
+        plot_single_metric(file_paths, label_names, title, loss_output, 'loss')
+        plot_single_metric(file_paths, label_names, title, acc_output, 'acc')
+    elif mode == 'acc':
+        # Plot accuracy
+        plot_single_metric(file_paths, label_names, title, acc_output, 'acc')
+    else:
+        # Plot single metric
+        plot_single_metric(file_paths, label_names, title, loss_output, 'loss')
+
 log_filenames = [
-    # '0) vgg-100-40-noniid-static-1-0.01-HeteroFL-diffsize.log',
-    # '0) vgg-100-40-noniid-static-1-0.01-ME-diffsize.log',
-
-    # '1) vgg-100-40-noniid-static-1-0.1-HeteroFL-diffsize.log',
-    # '1) vgg-100-40-noniid-static-1-0.1-ME-diffsize.log',
-
-    # '2) vgg-100-40-noniid-static-1-0.1-HeteroFL-samesize.log',
-    # '2) vgg-100-40-noniid-static-1-0.1-ME-samesize.log',
-
-    # '3) vgg-100-40-noniid-dynamic-1-0.1-HeteroFL-diffsize.log',
-    # '3) vgg-100-40-noniid-dynamic-1-0.1-ME-diffsize.log',
-
-    # '4) vgg-100-40-noniid-dynamic-1-0.1-HeteroFL-samesize.log',
-    # '4) vgg-100-40-noniid-dynamic-1-0.1-ME-samesize.log',
-
-    'exp_vgg11_default_diff0.8.log',
-    'exp2_vgg11_ME_diff0.8.log',
+    'results_jan_week4/exp10_vgg11_default_samesize.log',
+    'results_jan_week4/exp10_vgg11_ME_samesize.log',
 ]
 label_names = [
     'HeteroFL',
     'ME',
 ]
 
-# output_image = '0) vgg-100-40-noniid-static-1-0.01-diffsize(HeteroFL vs ME).png'
-# title = 'VGG(40 epoch, 0.01 lr, noniid static split, diffsize) : HeteroFL vs ME'
-# output_image = '1) vgg-100-40-noniid-static-1-0.1-diffsize(HeteroFL vs ME).png'
-# title = 'VGG(40 epoch, 0.1 lr, noniid static split, diffsize) : HeteroFL vs ME'
-# output_image = '2) vgg-100-40-noniid-static-1-0.1-samesize(HeteroFL vs ME).png'
-# title = 'VGG(40 epoch, 0.1 lr, noniid static split, samesize) : HeteroFL vs ME'
-# output_image = '3) vgg-100-40-noniid-dynamic-1-0.1-diffsize(HeteroFL vs ME).png'
-# title = 'VGG(40 epoch, 0.1 lr, noniid dynamic split, diffsize) : HeteroFL vs ME'
-# output_image = '4) vgg-100-40-noniid-dynamic-1-0.1-samesize(HeteroFL vs ME).png'
-# title = 'VGG(40 epoch, 0.1 lr, noniid dynamic split, samesize) : HeteroFL vs ME'
-output_image = 'exp2_vgg11_diff0.8_loss.png'
-title = 'VGG11 (diff 0.8)'
+output_image = 'results_jan_week4/exp10_vgg11_samesize.png'
+title = 'VGG11 (same size)'
 parse_log_and_plot(log_filenames, label_names, title, output_image)

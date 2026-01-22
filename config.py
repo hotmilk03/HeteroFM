@@ -98,4 +98,4 @@ SINKHORN_SCALING = 1.0  # Cost scaling factor
 SILENT = True
 PERM_WARNING = True
 CLIENT_EVAL = True
-DRAW = 'loss' # 'acc' or 'loss'
+DRAW = 'all' # 'acc' or 'loss' or 'all'
