@@ -31,15 +31,19 @@ def _init_distributed():
 
         # Master addr/port
         master_addr = os.environ.get("MASTER_ADDR")
-        master_port = os.environ.get("MASTER_PORT")
-        if master_addr is None or master_port is None:
-            # Fallback: on SLURM, use first hostname
-            master_addr = master_addr or "127.0.0.1"
-            master_port = master_port or "29500"
+        
+        # Fallback: on SLURM, use first hostname
+        master_addr = master_addr or "127.0.0.1"
+            
+        # Use job ID to avoid port conflicts when multiple jobs run on same node
+        base_port = 29500
+        job_id = int(os.environ.get("SLURM_JOB_ID", "0"))
+        port_offset = job_id % 1000  # Keep offset within reasonable range
+        master_port = str(base_port + port_offset)
 
-        os.environ.setdefault("MASTER_ADDR", master_addr)
-        os.environ.setdefault("MASTER_PORT", master_port)
-
+        os.environ["MASTER_ADDR"] = master_addr
+        os.environ["MASTER_PORT"] = master_port
+        
         backend = "nccl" if torch.cuda.is_available() else "gloo"
 
         if not config.SILENT:
@@ -249,10 +253,11 @@ def main():
     torch.backends.cudnn.benchmark = True
     is_dist, rank, world_size, local_rank = _init_distributed()
     num_gpus = torch.cuda.device_count()
-    if is_dist:
-        # In distributed mode, each process can use multiple local GPUs
-        print(f"[Rank {rank}/{world_size}] Local GPUs: {num_gpus}")
-    print(f"Number of available GPUs (visible to this process): {num_gpus}\n")
+    if not config.SILENT:
+        if is_dist:
+            # In distributed mode, each process can use multiple local GPUs
+            print(f"[Rank {rank}/{world_size}] Local GPUs: {num_gpus}")
+        print(f"Number of available GPUs (visible to this process): {num_gpus}\n")
 
     server_device = torch.device("cpu")
     if config.REARRANGE:
@@ -470,11 +475,19 @@ def main():
                 # for idx, (state, size) in enumerate(client_contributions):
                 #     print(f"[DEBUG - client {idx}] features.0.weight shape={state['features.0.weight'].shape}, size={size}")
                 global_model_state = federated.aggregate_rearrange(
-                    global_model.state_dict(), client_contributions, device=agg_device
+                    global_model.state_dict(), 
+                    client_contributions, 
+                    device=agg_device,
+                    comm_round=comm_round,
+                    test_loader=test_loader
                 )
             else:
                 global_model_state = federated.aggregate_heterofl(
-                    global_model.state_dict(), client_contributions, device=agg_device
+                    global_model.state_dict(), 
+                    client_contributions, 
+                    device=agg_device,
+                    comm_round=comm_round,
+                    test_loader=test_loader
                 )
         else:
             global_model_state = None

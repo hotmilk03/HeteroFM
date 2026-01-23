@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import copy
+import numpy as np
 from model import init_model
 from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, vgg_permutation_spec, resnet50_permutation_spec, weight_matching, apply_permutation
 import config
@@ -117,11 +118,150 @@ def client_update(client_loader, test_loader, local_test_loader, global_model_st
 
     return final_state_dict, client_size_ratio, metrics
 
-def aggregate_heterofl(global_model_state, client_contributions, device='cpu'):
+def interpolation_experiment(params_a, params_b, size_a, size_b, test_loader, device='cpu', match_mode=None):
+    """
+    Performs interpolation experiment between two aligned models.
+    Lambda ranges from -0.2 to 1.2 in steps of 0.02.
+    
+    Args:
+        params_a: First model parameters (already aligned/permuted)
+        params_b: Second model parameters (already aligned/permuted)
+        size_a: Size ratio of first model
+        size_b: Size ratio of second model
+        test_loader: Test dataset loader for evaluation
+        device: Device for evaluation
+        match_mode: 'E' (Extension), 'C' (Contraction), or None (HeteroFL - zero padding)
+    """
+    print("\n" + "="*80)
+    print("Starting Interpolation Experiment between first two clients")
+    print(f"Match mode: {match_mode if match_mode else 'HeteroFL (zero padding)'}")
+    print("="*80)
+    
+    lambdas = np.arange(config.INTERPOLATION_LAMBDA_START, config.INTERPOLATION_LAMBDA_END + config.INTERPOLATION_LAMBDA_STEP, config.INTERPOLATION_LAMBDA_STEP)  # -0.2 to 1.2, step 0.02
+    results = []
+    
+    # Prepare aligned models based on match_mode
+    aligned_params_a = {}
+    aligned_params_b = {}
+    
+    if match_mode is None or match_mode == 'E':
+        # HeteroFL or Extension mode: Align to the larger model size with zero padding
+        max_size = max(size_a, size_b)
+        
+        for key in params_a:
+            if key in params_b:
+                shape_a = params_a[key].shape
+                shape_b = params_b[key].shape
+                
+                # Determine target shape (maximum of both dimensions)
+                target_shape = tuple(max(dim_a, dim_b) for dim_a, dim_b in zip(shape_a, shape_b))
+                
+                # Zero-pad params_a to target shape
+                param_a_padded = torch.zeros(target_shape, dtype=params_a[key].dtype, device=params_a[key].device)
+                slices_a = tuple(slice(0, dim) for dim in shape_a)
+                param_a_padded[slices_a] = params_a[key]
+                
+                # Zero-pad params_b to target shape
+                param_b_padded = torch.zeros(target_shape, dtype=params_b[key].dtype, device=params_b[key].device)
+                slices_b = tuple(slice(0, dim) for dim in shape_b)
+                param_b_padded[slices_b] = params_b[key]
+                
+                aligned_params_a[key] = param_a_padded
+                aligned_params_b[key] = param_b_padded
+        
+        eval_size = max_size
+        
+    elif match_mode == 'C':
+        # Contraction mode: Align to the smaller model size
+        min_size = min(size_a, size_b)
+        
+        for key in params_a:
+            if key in params_b:
+                shape_a = params_a[key].shape
+                shape_b = params_b[key].shape
+                
+                # Determine target shape (minimum of both dimensions)
+                target_shape = tuple(min(dim_a, dim_b) for dim_a, dim_b in zip(shape_a, shape_b))
+                
+                # Contract params_a to target shape
+                slices = tuple(slice(0, dim) for dim in target_shape)
+                param_a_contracted = params_a[key][slices]
+                
+                # Contract params_b to target shape
+                param_b_contracted = params_b[key][slices]
+                
+                aligned_params_a[key] = param_a_contracted
+                aligned_params_b[key] = param_b_contracted
+        
+        eval_size = min_size
+    
+    else:
+        raise ValueError(f"Invalid match_mode: {match_mode}")
+    
+    # Now interpolate between aligned models
+    for lam in lambdas:
+        interpolated_state = {}
+        
+        for key in aligned_params_a:
+            # Interpolate: lambda * param_a + (1 - lambda) * param_b
+            interpolated_param = lam * aligned_params_a[key] + (1 - lam) * aligned_params_b[key]
+            interpolated_state[key] = interpolated_param
+        
+        # Create a model with the interpolated weights
+        eval_model = init_model(eval_size).to(device)
+        
+        # Load interpolated weights into the model
+        model_state = eval_model.state_dict()
+        for key in interpolated_state:
+            if key in model_state:
+                model_state[key] = interpolated_state[key].to(device)
+        
+        eval_model.load_state_dict(model_state)
+        
+        # Evaluate on test dataset
+        test_loss, test_acc = evaluate(eval_model, test_loader, device)
+        results.append((lam, test_loss, test_acc))
+        
+        print(f"lambda = {lam:5.2f} | Test Loss: {test_loss:.6f} | Test Accuracy: {test_acc:6.2f}%")
+        
+        # Clean up
+        del eval_model
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+    
+    print("="*80)
+    print("Interpolation Experiment Complete")
+    print("="*80 + "\n")
+    
+    return results
+
+def aggregate_heterofl(global_model_state, client_contributions, device='cpu', comm_round=None, test_loader=None):
     """
     Aggregates heterogeneous client models into the global model using the HeteroFL logic.
     It averages the weights of the sub-models on the corresponding parts of the global model.
+    
+    Args:
+        comm_round: Current communication round (for interpolation experiment)
+        test_loader: Test dataset loader (for interpolation experiment)
     """
+    # Interpolation experiment for first round with first two clients (without permutation)
+    if (comm_round <= config.INTERPOLATION_ROUND and config.INTERPOLATION and 
+        len(client_contributions) >= 2 and test_loader is not None):
+        # Get first two client states
+        params_a, size_a = client_contributions[0]
+        params_b, size_b = client_contributions[1]
+        
+        print(f"\n[Interpolation - HeteroFL] Starting experiment between client 0 (size={size_a}) and client 1 (size={size_b})")
+        interpolation_experiment(
+            params_a=params_a,
+            params_b=params_b,
+            size_a=size_a,
+            size_b=size_b,
+            test_loader=test_loader,
+            device=device,
+            match_mode=None  # HeteroFL uses zero padding
+        )
+    
     # Create a zero-initialized state for aggregation and a counter
     agg_state = copy.deepcopy(global_model_state)
     count_state = copy.deepcopy(global_model_state)
@@ -152,12 +292,16 @@ def aggregate_heterofl(global_model_state, client_contributions, device='cpu'):
         
     return new_global_state
 
-def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
+def aggregate_rearrange(global_model_state, client_contributions, device='cpu', comm_round=None, test_loader=None):
     """
     Aggregates heterogeneous client models by first finding a permutation to align neurons
     and then averaging. The reference model selection depends on MATCH mode:
     - Extension (E): Use largest model as reference (since global model is MAX_W)
     - Contraction (C): Use smallest model as reference (since global model is MIN_W)
+    
+    Args:
+        comm_round: Current communication round (for interpolation experiment)
+        test_loader: Test dataset loader (for interpolation experiment)
     """
     if not client_contributions:
         return global_model_state
@@ -241,6 +385,25 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu'):
 
         permuted_client_contributions.append((permuted_params_b, client_size_ratio))
         # print(f"Finished rearranging client model with size {client_size}.")
+        
+        # Interpolation experiment for first round with first two clients
+        if (comm_round <= config.INTERPOLATION_ROUND and config.INTERPOLATION and 
+            client_idx == 1 and test_loader is not None):
+            # We have params_a (reference, client 0) and permuted_params_b (client 1)
+            # Get size ratios
+            size_a = target_size_ratio  # Reference client size
+            size_b = client_size_ratio  # Current client size
+            
+            print(f"\n[Interpolation - Rearrange] Starting experiment between client 0 (size={size_a}) and client 1 (size={size_b})")
+            interpolation_experiment(
+                params_a=params_a,
+                params_b=permuted_params_b,
+                size_a=size_a,
+                size_b=size_b,
+                test_loader=test_loader,
+                device=device,
+                match_mode=config.MATCH  # Use the same match mode as weight matching
+            )
 
     # Aggregate the permuted models on GPU
     agg_state = copy.deepcopy(global_model_state)

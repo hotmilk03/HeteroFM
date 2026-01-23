@@ -92,6 +92,7 @@ SINKHORN_LR = 1.0  # Learning rate for gradient descent optimization # 0.1 or 1.
 SINKHORN_SCALING = 1.0  # Cost scaling factor
 
 # =============================================================================
+# =============================================================================
 # PRINTING OPTIONS
 # =============================================================================
 
@@ -99,3 +100,14 @@ SILENT = True
 PERM_WARNING = True
 CLIENT_EVAL = True
 DRAW = 'all' # 'acc' or 'loss' or 'all'
+
+# =============================================================================
+# INTERPOLATION
+# =============================================================================
+
+INTERPOLATION = True
+INTERPOLATION_ROUND = 10
+INTERPOLATION_LAMBDA_START = -0.2
+INTERPOLATION_LAMBDA_END = 1.2
+INTERPOLATION_LAMBDA_STEP = 0.02  # 0.1 or 0.02
+INTERPOLATION_ANIMATION = True  # True for animated plot, False for static plot
