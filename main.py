@@ -150,6 +150,8 @@ def parse_args():
                         help='Model architecture')
     parser.add_argument('--w-client', type=str, default=None,
                         help='Client width ratios (comma-separated, e.g., "1,1,0.5,0.5")')
+    parser.add_argument('--vgg-width-multiplier', type=int, default=None,
+                        help='VGG channel width multiplier (e.g., 1, 2, 4, 8)')
     
     # Training parameters
     parser.add_argument('--rounds', type=int, default=None,
@@ -207,6 +209,16 @@ def apply_args_to_config(args):
         config.NUM_CLIENTS = len(w_values)
         config.MAX_W = max(w_values)
         config.MIN_W = min(w_values)
+
+    # Update VGG width settings (must recompute dependent configs)
+    if getattr(args, 'vgg_width_multiplier', None) is not None:
+        config.VGG_WIDTH_MULTIPLIER = int(args.vgg_width_multiplier)
+        # Recompute VGG config and base width derived values
+        config.VGG_CFG = {
+            key: [item if item == 'M' else item * config.VGG_WIDTH_MULTIPLIER for item in config.VGG_CFG_ORIGIN[key]]
+            for key in config.VGG_CFG_ORIGIN
+        }
+        config.VGG_BASE_WIDTH = 512 * config.VGG_WIDTH_MULTIPLIER
     
     if args.rounds is not None:
         config.COMMUNICATION_ROUNDS = args.rounds
