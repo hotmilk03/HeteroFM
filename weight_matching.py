@@ -211,65 +211,77 @@ def weight_matching(ps: PermutationSpec, params_a, params_b, permute_mode, match
                 print(ps.perm_to_axes)
                 print(f"Processing permutation {p} (size_a: {size_a}, size_b: {size_b})")
 
-            cost_matrix = torch.zeros(size_a, size_b)
+            # Helper function to compute cost matrix for given mode combination
+            def _compute_cost_matrix(perm_mode, mat_mode):
+                cost_mat = torch.zeros(size_a, size_b)
+                
+                for wk, axis in ps.perm_to_axes[p]:
+                    w_a = params_a[wk].clone()
+                    w_b_permuted = get_permuted_param(ps, perm, wk, params_b, except_axis=axis)
+                    
+                    # Define valid region slice: keep 'axis' full, crop others to A's size
+                    slices = [slice(0, w_a.shape[d]) if d != axis else slice(None) for d in range(w_a.ndim)]
+
+                    if mat_mode == 'C':
+                        # Contraction mode: Cut B to match A's dimensions
+                        w_b_permuted = w_b_permuted[tuple(slices)]
+
+                    elif mat_mode == 'E':
+                        # Extension mode: A is small (reference), B is large (target)
+                        # Extend A to match B's non-axis dimensions for proper comparison
+                        
+                        # Create extended version of A with B's dimensions on non-axis dims
+                        extended_shape = list(w_b_permuted.shape)
+                        extended_shape[axis] = w_a.shape[axis]  # Keep A's axis size
+                        
+                        # Initialize with B's values (copy padding from large model)
+                        w_a_extended = torch.zeros(extended_shape, dtype=w_b_permuted.dtype, device=w_b_permuted.device)
+                        # Copy B's values to initialize the extended tensor (up to extended_shape size)
+                        slices_b = [slice(0, min(extended_shape[d], w_b_permuted.shape[d])) for d in range(w_b_permuted.ndim)]
+                        w_a_extended[tuple(slices_b)] = w_b_permuted[tuple(slices_b)]
+                        
+                        # Copy A's data into the extended tensor
+                        slices = [slice(0, w_a.shape[d]) for d in range(w_a.ndim)]
+                        w_a_extended[tuple(slices)] = w_a
+                        
+                        # Use extended version for comparison
+                        w_a = w_a_extended
+
+                    # Align axes for dot product
+                    w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
+                    w_b_flat = w_b_permuted.movedim(axis, 0).reshape(w_b_permuted.shape[axis], -1)
+                    
+                    dot_product = w_a_flat @ w_b_flat.T
+                    
+                    # Handle PERMUTE mode for cost objective
+                    if perm_mode == 'M':
+                        cost = dot_product
+                    elif perm_mode == 'Z':
+                        cost = -torch.abs(dot_product)
+                    else:
+                        raise ValueError(f"Unknown PERMUTE mode: {perm_mode}")
+                    
+                    # The cost matrix size is determined by the dot_product shape
+                    cost_mat[:cost.shape[0], :cost.shape[1]] += cost
+                
+                return cost_mat
             
-            for wk, axis in ps.perm_to_axes[p]:
-                w_a = params_a[wk].clone()
-                w_b_permuted = get_permuted_param(ps, perm, wk, params_b, except_axis=axis)
-                
-                # Define valid region slice: keep 'axis' full, crop others to A's size
-                slices = [slice(0, w_a.shape[d]) if d != axis else slice(None) for d in range(w_a.ndim)]
-
-                if match_mode == 'C':
-                    # Contraction mode: Cut B to match A's dimensions
-                    w_b_permuted = w_b_permuted[tuple(slices)]
-
-                elif match_mode == 'E':
-                    # Extension mode: A is small (reference), B is large (target)
-                    # Extend A to match B's non-axis dimensions for proper comparison
-                    
-                    # Create extended version of A with B's dimensions on non-axis dims
-                    extended_shape = list(w_b_permuted.shape)
-                    extended_shape[axis] = w_a.shape[axis]  # Keep A's axis size
-                    
-                    # Initialize with B's values (copy padding from large model)
-                    w_a_extended = torch.zeros(extended_shape, dtype=w_b_permuted.dtype, device=w_b_permuted.device)
-                    # Copy B's values to initialize the extended tensor (up to extended_shape size)
-                    slices_b = [slice(0, min(extended_shape[d], w_b_permuted.shape[d])) for d in range(w_b_permuted.ndim)]
-                    w_a_extended[tuple(slices_b)] = w_b_permuted[tuple(slices_b)]
-                    
-                    # Copy A's data into the extended tensor
-                    slices = [slice(0, w_a.shape[d]) for d in range(w_a.ndim)]
-                    w_a_extended[tuple(slices)] = w_a
-                    
-                    # Use extended version for comparison
-                    w_a = w_a_extended
-
-                # Align axes for dot product
-                w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
-                w_b_flat = w_b_permuted.movedim(axis, 0).reshape(w_b_permuted.shape[axis], -1)
-                
-                dot_product = w_a_flat @ w_b_flat.T
+            # Compute cost matrix (single mode or interpolated)
+            if config.REARRANGE_INTERPOLATE:
+                # Interpolate between two mode combinations
+                cost_matrix_1 = _compute_cost_matrix(permute_mode, match_mode)
+                cost_matrix_2 = _compute_cost_matrix(config.PERMUTE_INTERPOLATE, config.MATCH_INTERPOLATE)
+                cost_matrix = (1 - config.INTERPOLATE_WEIGHT) * cost_matrix_1 + config.INTERPOLATE_WEIGHT * cost_matrix_2
                 
                 if not silent:
-                    print(f"w_a_flat shape: {w_a_flat.shape}, w_b_flat shape: {w_b_flat.shape}")
-                    print(f"Dot product shape for {wk}, axis {axis}: {dot_product.shape}")
+                    print(f"Interpolating: ({permute_mode}+{match_mode}) with weight {1-config.INTERPOLATE_WEIGHT:.2f} + "
+                          f"({config.PERMUTE_INTERPOLATE}+{config.MATCH_INTERPOLATE}) with weight {config.INTERPOLATE_WEIGHT:.2f}")
+            else:
+                # Single mode combination
+                cost_matrix = _compute_cost_matrix(permute_mode, match_mode)
 
-                # Handle PERMUTE mode for cost objective
-                if permute_mode == 'M':
-                    cost = dot_product
-                elif permute_mode == 'Z':
-                    cost = -torch.abs(dot_product)
-                else:
-                    raise ValueError(f"Unknown PERMUTE mode: {permute_mode}")
-                
-                # The cost matrix size is determined by the dot_product shape
-                cost_matrix[:cost.shape[0], :cost.shape[1]] += cost
-
-                if not silent:
-                    # should be same
-                    print(f"Cost shape for {wk}, axis {axis}: {cost.shape}")
-                    print(f"cost_matrix.shape: {cost_matrix.shape}")
+            if not silent:
+                print(f"cost_matrix.shape: {cost_matrix.shape}")
                 
             # Solve assignment problem
             ri, ci = linear_sum_assignment(cost_matrix.numpy(), maximize=True)
@@ -372,64 +384,80 @@ def _weight_matching_sinkhorn(ps: PermutationSpec, params_a, params_b, permute_m
         # Compute alignment loss using soft permutations
         total_loss = torch.tensor(0.0, dtype=torch.float32, requires_grad=True)        
         
-        for p in perm_names:
-            for wk, axis in ps.perm_to_axes[p]:
-                w_a = params_a[wk].detach().clone()
-                # Use original params_b, not pre-permuted
-                # In Sinkhorn, we optimize P_soft directly via gradient descent
-                # Applying get_permuted_param would double-apply the soft permutation
-                # The coupling between different permutations is handled implicitly
-                # through the joint optimization of all P_matrices
-                w_b = params_b[wk]
-                
-                # Define valid region slice: keep 'axis' full, crop others to A's size
-                slices = [slice(0, w_a.shape[d]) if d != axis else slice(None) for d in range(w_a.ndim)]
-                
-                if match_mode == 'C':
-                    # Contraction mode: Cut B to match A's dimensions  
-                    w_b = w_b[tuple(slices)]
-                elif match_mode == 'E':
-                    # Extension mode: A is small (reference), B is large (target)
-                    # Extend A to match B's non-axis dimensions for proper comparison
+        # Helper function to compute loss for given mode combination
+        def _compute_alignment_loss(perm_mode, mat_mode):
+            loss = torch.tensor(0.0, dtype=torch.float32, requires_grad=True)
+            
+            for p in perm_names:
+                for wk, axis in ps.perm_to_axes[p]:
+                    w_a = params_a[wk].detach().clone()
+                    # Use original params_b, not pre-permuted
+                    # In Sinkhorn, we optimize P_soft directly via gradient descent
+                    # Applying get_permuted_param would double-apply the soft permutation
+                    # The coupling between different permutations is handled implicitly
+                    # through the joint optimization of all P_matrices
+                    w_b = params_b[wk]
                     
-                    # Create extended version of A with B's dimensions on non-axis dims
-                    extended_shape = list(w_b.shape)
-                    extended_shape[axis] = w_a.shape[axis]  # Keep A's axis size
+                    # Define valid region slice: keep 'axis' full, crop others to A's size
+                    slices = [slice(0, w_a.shape[d]) if d != axis else slice(None) for d in range(w_a.ndim)]
                     
-                    # Initialize with B's values (copy padding from large model)
-                    w_a_extended = torch.zeros(extended_shape, dtype=w_b.dtype, device=w_b.device)
-                    # Copy B's values to initialize the extended tensor (up to extended_shape size)
-                    slices_b = [slice(0, min(extended_shape[d], w_b.shape[d])) for d in range(w_b.ndim)]
-                    w_a_extended[tuple(slices_b)] = w_b[tuple(slices_b)]
+                    if mat_mode == 'C':
+                        # Contraction mode: Cut B to match A's dimensions  
+                        w_b = w_b[tuple(slices)]
+                    elif mat_mode == 'E':
+                        # Extension mode: A is small (reference), B is large (target)
+                        # Extend A to match B's non-axis dimensions for proper comparison
+                        
+                        # Create extended version of A with B's dimensions on non-axis dims
+                        extended_shape = list(w_b.shape)
+                        extended_shape[axis] = w_a.shape[axis]  # Keep A's axis size
+                        
+                        # Initialize with B's values (copy padding from large model)
+                        w_a_extended = torch.zeros(extended_shape, dtype=w_b.dtype, device=w_b.device)
+                        # Copy B's values to initialize the extended tensor (up to extended_shape size)
+                        slices_b = [slice(0, min(extended_shape[d], w_b.shape[d])) for d in range(w_b.ndim)]
+                        w_a_extended[tuple(slices_b)] = w_b[tuple(slices_b)]
+                        
+                        # Copy A's data into the extended tensor
+                        slices_copy = [slice(0, w_a.shape[d]) for d in range(w_a.ndim)]
+                        w_a_extended[tuple(slices_copy)] = w_a
+                        
+                        # Use extended version for comparison
+                        w_a = w_a_extended
                     
-                    # Copy A's data into the extended tensor
-                    slices_copy = [slice(0, w_a.shape[d]) for d in range(w_a.ndim)]
-                    w_a_extended[tuple(slices_copy)] = w_a
+                    # Align axes for dot product - same as original weight_matching
+                    w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
+                    w_b_flat = w_b.movedim(axis, 0).reshape(w_b.shape[axis], -1)
                     
-                    # Use extended version for comparison
-                    w_a = w_a_extended
-                
-                # Align axes for dot product - same as original weight_matching
-                w_a_flat = w_a.movedim(axis, 0).reshape(w_a.shape[axis], -1)
-                w_b_flat = w_b.movedim(axis, 0).reshape(w_b.shape[axis], -1)
-                
-                # Compute similarity matrix for proper gradient flow
-                # (size_a, size_b) matrix where each entry is similarity between neuron pairs
-                similarity_matrix = w_a_flat @ w_b_flat.T
-                
-                # Compute alignment loss using soft permutation
-                P_soft = soft_perms[p]
-                
-                if permute_mode == 'M':
-                    # Maximize alignment: -trace(P^T @ similarity_matrix)
-                    # This encourages P to assign high weights to high similarity pairs
-                    alignment = torch.sum(P_soft * similarity_matrix)
-                    total_loss = total_loss - alignment
-                elif permute_mode == 'Z':
-                    # For zero-padding mode, minimize absolute difference
-                    # Use Frobenius norm weighted by P
-                    diff_matrix = torch.abs(similarity_matrix)
-                    total_loss = total_loss + torch.sum(P_soft * diff_matrix)
+                    # Compute similarity matrix for proper gradient flow
+                    # (size_a, size_b) matrix where each entry is similarity between neuron pairs
+                    similarity_matrix = w_a_flat @ w_b_flat.T
+                    
+                    # Compute alignment loss using soft permutation
+                    P_soft = soft_perms[p]
+                    
+                    if perm_mode == 'M':
+                        # Maximize alignment: -trace(P^T @ similarity_matrix)
+                        # This encourages P to assign high weights to high similarity pairs
+                        alignment = torch.sum(P_soft * similarity_matrix)
+                        loss = loss - alignment
+                    elif perm_mode == 'Z':
+                        # For zero-padding mode, minimize absolute difference
+                        # Use Frobenius norm weighted by P
+                        diff_matrix = torch.abs(similarity_matrix)
+                        loss = loss + torch.sum(P_soft * diff_matrix)
+            
+            return loss
+        
+        # Compute total loss (single mode or interpolated)
+        if config.REARRANGE_INTERPOLATE:
+            # Interpolate between two mode combinations
+            loss_1 = _compute_alignment_loss(permute_mode, match_mode)
+            loss_2 = _compute_alignment_loss(config.PERMUTE_INTERPOLATE, config.MATCH_INTERPOLATE)
+            total_loss = (1 - config.INTERPOLATE_WEIGHT) * loss_1 + config.INTERPOLATE_WEIGHT * loss_2
+        else:
+            # Single mode combination
+            total_loss = _compute_alignment_loss(permute_mode, match_mode)
         
         # Backward and optimize
         if total_loss.requires_grad:

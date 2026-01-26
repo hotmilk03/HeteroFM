@@ -54,7 +54,7 @@ def _init_distributed():
             rank=rank, 
             world_size=world_size,
             device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None,
-            timeout=timedelta(minutes=60)
+            timeout=timedelta(minutes=360)
         )
         
         if not config.SILENT:
@@ -122,6 +122,10 @@ def print_info(label_splits):
         print("  - Model Aggregation: Rearrangement")
         print(f"    - Permute Mode: {config.PERMUTE}")
         print(f"    - Match Mode: {config.MATCH}")
+        if config.REARRANGE_INTERPOLATE:
+            print(f"    - Interpolation Permute Mode: {config.PERMUTE_INTERPOLATE}")
+            print(f"    - Interpolation Match Mode: {config.MATCH_INTERPOLATE}")
+            print(f"    - Interpolation Weight: {config.INTERPOLATE_WEIGHT}")
         print(f"  - Sinkhorn: {config.SINKHORN}")
         if config.SINKHORN:
             print(f"    - Sinkhorn Lambda: {config.SINKHORN_LAMBDA}")
