@@ -80,9 +80,15 @@ NUM_WORKERS = 1 # only 1 OK
 # REARRANGEMENT PARAMETERS
 # =============================================================================
 
-REARRANGE = False
+REARRANGE = True
 PERMUTE = 'M' # 'Z' for zeroing, 'M' for maximizing
-MATCH = 'E' # 'C' for contraction, 'E' for extension
+MATCH = 'C' # 'C' for contraction, 'E' for extension
+
+# Interpolation between two mode combinations (e.g., MC + ZE)
+REARRANGE_INTERPOLATE = False  # Enable interpolation between two mode pairs
+PERMUTE_INTERPOLATE = 'Z'  # Second permute mode to interpolate with
+MATCH_INTERPOLATE = 'E'    # Second match mode to interpolate with
+INTERPOLATE_WEIGHT = 0.5   # Weight for interpolation (0.5 = equal mix)
 
 SINKHORN = False
 SINKHORN_MAX_ITER = 50  # Maximum GD iterations (50-100 needed for Hungarian parity)
@@ -92,6 +98,13 @@ SINKHORN_LR = 1.0  # Learning rate for gradient descent optimization # 0.1 or 1.
 SINKHORN_SCALING = 1.0  # Cost scaling factor
 
 # =============================================================================
+# REPRODUCIBILITY
+# =============================================================================
+
+# Global random seed for reproducibility
+# Set to None to disable reproducibility
+SEED = 42
+
 # =============================================================================
 # PRINTING OPTIONS
 # =============================================================================
@@ -110,4 +123,5 @@ INTERPOLATION_ROUND = 10
 INTERPOLATION_LAMBDA_START = -0.2
 INTERPOLATION_LAMBDA_END = 1.2
 INTERPOLATION_LAMBDA_STEP = 0.02  # 0.1 or 0.02
-INTERPOLATION_ANIMATION = True  # True for animated plot, False for static plot
+INTERPOLATION_ANIMATION = False  # True for animated plot, False for static plot
+INTERPOLATION_3D = False  # True for 3D plot, False for 2D plot

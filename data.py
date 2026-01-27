@@ -234,10 +234,16 @@ class Dataset:
         client_indices_map = {}
         label_splits = {}
         
+        # Use fixed seed for reproducibility if configured
+        if hasattr(config, 'SEED') and config.SEED is not None:
+            rng = np.random.RandomState(config.SEED)
+        else:
+            rng = np.random
+        
         if data_split_mode == 'iid':
             num_samples = len(self.train_dataset)
             indices = list(range(num_samples))
-            np.random.shuffle(indices)
+            rng.shuffle(indices)
             samples_per_client = num_samples // num_clients
             for i in range(num_clients):
                 client_indices = indices[i * samples_per_client: (i + 1) * samples_per_client]
@@ -255,13 +261,13 @@ class Dataset:
 
             class_shards = {i: [] for i in range(num_classes)}
             for i in range(num_classes):
-                np.random.shuffle(idx_by_class[i])
+                rng.shuffle(idx_by_class[i])
                 if not config.DYNAMIC_ON_NON_IID_SPLIT:
                     split_points = np.array_split(idx_by_class[i], shards_per_class)
                     class_shards[i] = [sp.tolist() for sp in split_points]
                 else:
                     total_samples = len(idx_by_class[i])
-                    weights = np.random.uniform(1, 4, shards_per_class)
+                    weights = rng.uniform(1, 4, shards_per_class)
                     weights /= weights.sum()
                     sizes = (total_samples * weights).astype(int)
                     remainder = total_samples - sizes.sum()
@@ -302,6 +308,20 @@ class Dataset:
         if client_ids is None:
             client_ids = list(client_indices_map.keys())
         
+        # Worker init function for reproducibility
+        def worker_init_fn(worker_id):
+            if hasattr(config, 'SEED') and config.SEED is not None:
+                worker_seed = config.SEED + worker_id
+                np.random.seed(worker_seed)
+                import random
+                random.seed(worker_seed)
+        
+        # Generator for reproducible shuffling
+        generator = None
+        if hasattr(config, 'SEED') and config.SEED is not None:
+            generator = torch.Generator()
+            generator.manual_seed(config.SEED)
+        
         client_loaders = {}
         client_test_loaders = {}
         
@@ -318,7 +338,9 @@ class Dataset:
                 num_workers=config.NUM_WORKERS,
                 drop_last=True,
                 pin_memory=torch.cuda.is_available(),
-                persistent_workers=(config.NUM_WORKERS > 0)
+                persistent_workers=(config.NUM_WORKERS > 0),
+                worker_init_fn=worker_init_fn,
+                generator=generator
             )
             
             # Test loader
@@ -335,7 +357,8 @@ class Dataset:
                 shuffle=False,
                 num_workers=config.NUM_WORKERS,
                 pin_memory=torch.cuda.is_available(),
-                persistent_workers=(config.NUM_WORKERS > 0)
+                persistent_workers=(config.NUM_WORKERS > 0),
+                worker_init_fn=worker_init_fn
             )
         
         # Common test loader
@@ -345,7 +368,8 @@ class Dataset:
             shuffle=False,
             num_workers=config.NUM_WORKERS,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=(config.NUM_WORKERS > 0)
+            persistent_workers=(config.NUM_WORKERS > 0),
+            worker_init_fn=worker_init_fn
         )
         
         return client_loaders, client_test_loaders, test_loader
@@ -378,8 +402,20 @@ class Dataset:
     def prepare_data(self, num_clients, batch_size, data_split_mode, n_classes_ratio):
         """Prepares data loaders for federated learning clients."""
         print(f"Preparing '{data_split_mode}' data split for {num_clients} clients...")
+                # Worker init function for reproducibility
+        def worker_init_fn(worker_id):
+            if hasattr(config, 'SEED') and config.SEED is not None:
+                worker_seed = config.SEED + worker_id
+                np.random.seed(worker_seed)
+                import random
+                random.seed(worker_seed)
         
-        client_loaders = []
+        # Generator for reproducible shuffling
+        generator = None
+        if hasattr(config, 'SEED') and config.SEED is not None:
+            generator = torch.Generator()
+            generator.manual_seed(config.SEED)
+            client_loaders = []
         
         # Get labels and class count for splitting (handles Subset from ImageNet subset)
         labels, num_classes = _extract_labels_and_classes(self.train_dataset)
@@ -395,12 +431,18 @@ class Dataset:
             # Labels already contiguous, no remapping needed
             new_to_old = {i: i for i in range(num_classes)}
 
+        # Use fixed seed for reproducibility if configured
+        if hasattr(config, 'SEED') and config.SEED is not None:
+            rng = np.random.RandomState(config.SEED)
+        else:
+            rng = np.random
+        
         if data_split_mode == 'iid':
             # IID split logic
             client_indices_map = {}
             num_samples = len(self.train_dataset)
             indices = list(range(num_samples))
-            np.random.shuffle(indices)
+            rng.shuffle(indices)
             samples_per_client = num_samples // num_clients
             label_splits = {}
             for i in range(num_clients):
@@ -415,7 +457,9 @@ class Dataset:
                     num_workers=config.NUM_WORKERS,
                     drop_last=True,
                     pin_memory=torch.cuda.is_available(),
-                    persistent_workers=(config.NUM_WORKERS > 0)
+                    persistent_workers=(config.NUM_WORKERS > 0),
+                    worker_init_fn=worker_init_fn,
+                    generator=generator
                 ))
                 
         elif data_split_mode == 'non-iid': # for mlp and vgg now (just for class# == client#)
@@ -432,7 +476,7 @@ class Dataset:
 
             class_shards = {i: [] for i in range(num_classes)}
             for i in range(num_classes):
-                np.random.shuffle(idx_by_class[i])
+                rng.shuffle(idx_by_class[i])
 
                 if not config.DYNAMIC_ON_NON_IID_SPLIT:
                     # Static split: equal shards
@@ -441,7 +485,7 @@ class Dataset:
                 else:
                     # Dynamic split: 1:4 ratio
                     total_samples = len(idx_by_class[i])
-                    weights = np.random.uniform(1, 4, shards_per_class)
+                    weights = rng.uniform(1, 4, shards_per_class)
                     weights /= weights.sum()
                     sizes = (total_samples * weights).astype(int)
                     
@@ -494,7 +538,9 @@ class Dataset:
                     num_workers=config.NUM_WORKERS,
                     drop_last=True,
                     pin_memory=torch.cuda.is_available(),
-                    persistent_workers=(config.NUM_WORKERS > 0)
+                    persistent_workers=(config.NUM_WORKERS > 0),
+                    worker_init_fn=worker_init_fn,
+                    generator=generator
                 ))
         else:
             raise ValueError("Invalid data_split_mode in config.py. Choose 'iid' or 'non-iid'.")
@@ -552,7 +598,8 @@ class Dataset:
                 shuffle=False,
                 num_workers=config.NUM_WORKERS,
                 pin_memory=torch.cuda.is_available(),
-                persistent_workers=(config.NUM_WORKERS > 0)
+                persistent_workers=(config.NUM_WORKERS > 0),
+                worker_init_fn=worker_init_fn
             ))
 
         # Create a single test loader (common for all clients)
@@ -562,7 +609,8 @@ class Dataset:
             shuffle=False,
             num_workers=config.NUM_WORKERS,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=(config.NUM_WORKERS > 0)
+            persistent_workers=(config.NUM_WORKERS > 0),
+            worker_init_fn=worker_init_fn
         )
         
         # Print class 0 (first class) distribution across clients

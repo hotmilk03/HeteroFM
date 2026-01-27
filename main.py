@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 import numpy as np
 import argparse
+import random
 
 import config
 import data
@@ -17,6 +18,32 @@ import model
 
 # Reduce CUDA memory fragmentation if the env var is unset.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+def set_seed(seed):
+    """
+    Set random seed for reproducibility across all random number generators.
+    
+    Args:
+        seed: Random seed value. If None, does nothing.
+    """
+    if seed is None:
+        return
+    
+    # Python's built-in random
+    random.seed(seed)
+    
+    # NumPy
+    np.random.seed(seed)
+    
+    # PyTorch
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    
+    # Make PyTorch deterministic (may impact performance)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def _init_distributed():
     """Initialize torch.distributed from SLURM or torchrun envs if available."""
@@ -89,7 +116,8 @@ def run_client_gpu(args):
             momentum=momentum,
             weight_decay=weight_decay,
             device=device,
-            previous_client_state=previous_client_state
+            previous_client_state=previous_client_state,
+            client_id=client_id
         )
         return client_state, size_ratio, metrics
 
@@ -108,8 +136,11 @@ def print_info(label_splits):
     print("=================================")
     print(f"  - Model: {config.MODEL}")
     print(f"  - Dataset: {config.DATA_SET}")
+    if config.MODEL == 'vgg11':
+        print(f"    - VGG Width Multiplier: {config.VGG_WIDTH_MULTIPLIER}")
     if config.MODEL == 'resnet50':
         print(f"    - ImageNet Subset Ratio: {config.IMAGENET_SUBSET_RATIO}")
+    print(f"  - Client Interpolation: {config.INTERPOLATION}")
     print(f"  - Data Split: {config.DATA_SPLIT_MODE}")
     if config.DATA_SPLIT_MODE == 'non-iid':
         print(f"    - Dynamic Split: {config.DYNAMIC_ON_NON_IID_SPLIT}")
@@ -191,6 +222,24 @@ def parse_args():
     parser.add_argument('--no-sinkhorn', action='store_false', dest='sinkhorn',
                         help='Disable Sinkhorn')
     
+    # Rearrangement Interpolation parameters
+    parser.add_argument('--rearrange-interpolate', action='store_true', default=None,
+                        help='Enable interpolation between two mode pairs')
+    parser.add_argument('--no-rearrange-interpolate', action='store_false', dest='rearrange_interpolate',
+                        help='Disable interpolation between two mode pairs')
+    parser.add_argument('--permute-interpolate', type=str, default=None, choices=['Z', 'M'],
+                        help='Second permute mode to interpolate with')
+    parser.add_argument('--match-interpolate', type=str, default=None, choices=['C', 'E'],
+                        help='Second match mode to interpolate with')
+    parser.add_argument('--interpolate-weight', type=float, default=None,
+                        help='Weight for interpolation (0.0 to 1.0)')
+    
+    # Model Interpolation parameters
+    parser.add_argument('--client-interpolation', action='store_true', default=None,
+                        help='Enable model interpolation analysis')
+    parser.add_argument('--no-client-interpolation', action='store_false', dest='interpolation',
+                        help='Disable model interpolation analysis')
+    
     args = parser.parse_args()
     return args
 
@@ -259,14 +308,35 @@ def apply_args_to_config(args):
     
     if args.sinkhorn is not None:
         config.SINKHORN = args.sinkhorn
+    
+    if args.rearrange_interpolate is not None:
+        config.REARRANGE_INTERPOLATE = args.rearrange_interpolate
+    
+    if args.permute_interpolate is not None:
+        config.PERMUTE_INTERPOLATE = args.permute_interpolate
+    
+    if args.match_interpolate is not None:
+        config.MATCH_INTERPOLATE = args.match_interpolate
+    
+    if args.interpolate_weight is not None:
+        config.INTERPOLATE_WEIGHT = args.interpolate_weight
+    
+    if args.interpolation is not None:
+        config.INTERPOLATION = args.interpolation
 
 def main():
     # Parse command line arguments and override config
     args = parse_args()
     apply_args_to_config(args)
     
+    # Set random seed for reproducibility
+    if hasattr(config, 'SEED') and config.SEED is not None:
+        set_seed(config.SEED)
+        if not hasattr(config, 'SILENT') or not config.SILENT:
+            print(f"Set random seed to {config.SEED} for reproducibility\n")
+    
     # setup
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = (not hasattr(config, 'SEED') or config.SEED is None)
     is_dist, rank, world_size, local_rank = _init_distributed()
     num_gpus = torch.cuda.device_count()
     if not config.SILENT:
@@ -276,15 +346,17 @@ def main():
         print(f"Number of available GPUs (visible to this process): {num_gpus}\n")
 
     server_device = torch.device("cpu")
+    # Initialize global model with base seed (0 for global model)
+    global_seed = config.SEED if (hasattr(config, 'SEED') and config.SEED is not None) else None
     if config.REARRANGE:
         if config.MATCH == 'C':
-            global_model = model.init_model(config.MIN_W).to(server_device)
+            global_model = model.init_model(config.MIN_W, seed=global_seed).to(server_device)
         elif config.MATCH == 'E':
-            global_model = model.init_model(config.MAX_W).to(server_device)
+            global_model = model.init_model(config.MAX_W, seed=global_seed).to(server_device)
         else:
             raise ValueError(f"Unknown MATCH mode: {config.MATCH}")
     else:
-        global_model = model.init_model(config.MAX_W).to(server_device)
+        global_model = model.init_model(config.MAX_W, seed=global_seed).to(server_device)
 
     # Optimizer and LR Scheduler
     optimizer = optim.SGD(global_model.parameters(), lr=config.LEARNING_RATE, momentum=config.MOMENTUM, weight_decay=config.WEIGHT_DECAY)

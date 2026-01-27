@@ -197,7 +197,28 @@ def ResNet50(w, scaler_rate, track, in_channels, num_classes):
 # Model Factory
 # =============================================================================
 
-def init_model(w, scaler_rate=1.0):
+def init_model(w, scaler_rate=1.0, seed=None):
+    """
+    Initialize a model with optional seed for reproducibility.
+    
+    Args:
+        w: Width multiplier ratio
+        scaler_rate: Scaler rate for the model
+        seed: Random seed for model initialization. If None, uses config.SEED if available.
+    
+    Returns:
+        Initialized model
+    """
+    # Set seed if provided or use config.SEED
+    if seed is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    elif hasattr(config, 'SEED') and config.SEED is not None:
+        torch.manual_seed(config.SEED)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(config.SEED)
+    
     # Determine model parameters based on dataset
     if config.DATA_SET == 'mnist':
         in_channels, num_classes = 1, 10
