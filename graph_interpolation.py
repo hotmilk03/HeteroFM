@@ -98,8 +98,10 @@ def _create_animation(all_data_by_file, labels, title, ylabel, output_file, vlin
     def animate(frame):
         ax.clear()
         ax.set_xlim(x_min - x_margin, x_max + x_margin)
-        # Fix y-range as requested
-        ax.set_ylim(0.5, 2.5)
+        # Fix y-range and ticks for loss plots only
+        if ylabel == 'Test Loss':
+            ax.set_ylim(0.5, 2.5)
+            ax.set_yticks([0.5, 1.0, 1.5, 2.0, 2.5])
         ax.set_xlabel('Lambda')
         ax.set_ylabel(ylabel)
         ax.set_title(f"{title} - Round {frame}")
@@ -263,6 +265,7 @@ def parse_interpolation_and_plot(file_paths, label_names, title, output_image, v
             if x_min is not None:
                 plt.xlim(x_min, x_max)
                 plt.ylim(0.5, 2.5)
+                plt.gca().set_yticks([0.5, 1.0, 1.5, 2.0, 2.5])
                 if vlines:
                     _draw_vlines(plt.gca(), vlines)
             plt.title(f"{title} (Loss)")
@@ -285,7 +288,6 @@ def parse_interpolation_and_plot(file_paths, label_names, title, output_image, v
                     plt.plot(lambdas, accs, linestyle='-', marker=None, label=label, zorder=3, linewidth=3, color=colors[idx])
             if x_min is not None:
                 plt.xlim(x_min, x_max)
-                plt.ylim(0.5, 2.5)
                 if vlines:
                     _draw_vlines(plt.gca(), vlines)
             plt.title(f"{title} (Accuracy)")
@@ -343,7 +345,7 @@ if __name__ == '__main__':
         if n == 1:
             parse_interpolation_and_plot(log_files, labels, title, output, vline_labels=('VGG', 'VGG'))
         else:
-            parse_interpolation_and_plot(log_files, labels, title, output, vline_labels=('VGG',f'VGG x{n}'))
+            parse_interpolation_and_plot(log_files, labels, title, output, vline_labels=('VGG',f'VGG x1/{n}'))
 
         if n != 1:
             log_files = [
@@ -362,7 +364,7 @@ if __name__ == '__main__':
             ]
             output = f'results_seed_init/client_interpolate/interpolation_vgg11_{n}-1.pdf'
             title = f'VGG11 Interpolation (diff {n}-1)'
-            parse_interpolation_and_plot(log_files, labels, title, output, vline_labels=('VGG',f'VGG x1/{n}'))
+            parse_interpolation_and_plot(log_files, labels, title, output, vline_labels=('VGG',f'VGG x{n}'))
             
         n *= 2
 

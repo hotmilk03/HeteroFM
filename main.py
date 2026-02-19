@@ -138,7 +138,7 @@ def print_info(label_splits):
     print(f"  - Dataset: {config.DATA_SET}")
     if config.MODEL == 'vgg11':
         print(f"    - VGG Width Multiplier: {config.VGG_WIDTH_MULTIPLIER}")
-    if config.MODEL == 'resnet50':
+    if config.DATA_SET == 'imagenet':
         print(f"    - ImageNet Subset Ratio: {config.IMAGENET_SUBSET_RATIO}")
     print(f"  - Client Interpolation: {config.INTERPOLATION}")
     print(f"  - Data Split: {config.DATA_SPLIT_MODE}")
@@ -181,7 +181,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='HeteroFM Federated Learning')
     
     # Model parameters
-    parser.add_argument('--model', type=str, default=None, choices=['mlp2', 'mlp3', 'vgg11', 'resnet50'],
+    parser.add_argument('--model', type=str, default=None, choices=['mlp2', 'mlp3', 'vgg11', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'],
                         help='Model architecture')
     parser.add_argument('--w-client', type=str, default=None,
                         help='Client width ratios (comma-separated, e.g., "1,1,0.5,0.5")')
@@ -239,6 +239,8 @@ def parse_args():
                         help='Enable model interpolation analysis')
     parser.add_argument('--no-client-interpolation', action='store_false', dest='interpolation',
                         help='Disable model interpolation analysis')
+    parser.add_argument('--interpolation-lambda-step', type=float, default=None,
+                        help='Lambda step size for interpolation')
     
     args = parser.parse_args()
     return args
@@ -252,7 +254,11 @@ def apply_args_to_config(args):
             'mlp2': 'mnist',
             'mlp3': 'mnist',
             'vgg11': 'cifar10',
-            'resnet50': 'imagenet'
+            'resnet18': 'cifar10',
+            'resnet34': 'cifar10',
+            'resnet50': 'imagenet',
+            'resnet101': 'imagenet',
+            'resnet152': 'imagenet'
         }
         config.DATA_SET = model_to_dataset[config.MODEL]
     
@@ -323,6 +329,9 @@ def apply_args_to_config(args):
     
     if args.interpolation is not None:
         config.INTERPOLATION = args.interpolation
+    
+    if args.interpolation_lambda_step is not None:
+        config.INTERPOLATION_LAMBDA_STEP = args.interpolation_lambda_step
 
 def main():
     # Parse command line arguments and override config

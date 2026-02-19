@@ -4,7 +4,7 @@ import torch.optim as optim
 import copy
 import numpy as np
 from model import init_model
-from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, vgg_permutation_spec, resnet50_permutation_spec, weight_matching, apply_permutation
+from weight_matching import mlp2_permutation_spec, mlp3_permutation_spec, vgg_permutation_spec, resnet_permutation_spec, weight_matching, apply_permutation
 import config
 import time
 
@@ -251,13 +251,8 @@ def aggregate_heterofl(global_model_state, client_contributions, device='cpu', c
     # Interpolation experiment for first round with first two clients (without permutation)
     if (comm_round <= config.INTERPOLATION_ROUND and config.INTERPOLATION and 
         len(client_contributions) >= 2 and test_loader is not None):
-        # Find the client with width == 1 to use as params_a
-        width1_state = None
-        width1_size = None
+        # Find the first client with width == 1 to use as params_a
         width1_idx = None
-        other_state = None
-        other_size = None
-        other_idx = None
         
         for idx, (state, size) in enumerate(client_contributions[:2]):
             # Check if this client has width == 1
@@ -265,21 +260,20 @@ def aggregate_heterofl(global_model_state, client_contributions, device='cpu', c
             if config.MODEL == 'vgg11':
                 effective_width *= config.VGG_WIDTH_MULTIPLIER
             
-            if effective_width == 1.0:
-                width1_state = state
-                width1_size = size
+            if effective_width == 1.0 and width1_idx is None:
                 width1_idx = idx
-            else:
-                other_state = state
-                other_size = size
-                other_idx = idx
+                break
         
         # Use width==1 client as params_a if found, otherwise use first client
-        if width1_state is not None and other_state is not None:
-            params_a, size_a = width1_state, width1_size
-            params_b, size_b = other_state, other_size
-            print(f"\n[Interpolation - HeteroFL] Starting experiment with client {width1_idx} (width=1, size={size_a}) vs client {other_idx} (size={size_b})")
+        if width1_idx is not None:
+            # Use the width==1 client as params_a
+            params_a_idx = width1_idx
+            params_b_idx = 1 - width1_idx  # 0 -> 1, 1 -> 0
+            params_a, size_a = client_contributions[params_a_idx]
+            params_b, size_b = client_contributions[params_b_idx]
+            print(f"\n[Interpolation - HeteroFL] Starting experiment with client {params_a_idx} (width=1, size={size_a}) vs client {params_b_idx} (size={size_b})")
         else:
+            # No width==1 client found, use default order
             params_a, size_a = client_contributions[0]
             params_b, size_b = client_contributions[1]
             print(f"\n[Interpolation - HeteroFL] Starting experiment between client 0 (size={size_a}) and client 1 (size={size_b})")
@@ -357,18 +351,18 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu', 
         ps = mlp3_permutation_spec()
     elif config.MODEL == 'vgg11':
         ps = vgg_permutation_spec()
-    elif config.MODEL == 'resnet50':
-        ps = resnet50_permutation_spec()
+    elif config.MODEL in ['resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152']:
+        ps = resnet_permutation_spec(config.MODEL)
     else:
         raise ValueError(f"No permutation spec defined for model: {config.MODEL}")
     
     params_a = ref_client_state  # Reference for permutation
 
-    # Track width==1 client for interpolation experiment
-    width1_client_state = None
-    width1_client_size = None
-    width1_client_idx = None
-    width1_permuted_state = None
+    # Track interpolation states: prefer width==1, prioritize ref if it's width==1
+    interp_params_a = None
+    interp_size_a = None
+    interp_idx_a = None
+    ref_client_idx = None
 
     permuted_client_contributions = []
     for client_idx, (client_state, client_size_ratio) in enumerate(client_contributions):
@@ -382,11 +376,12 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu', 
         if client_state is ref_client_state:
             # The reference model does not need to be permuted
             permuted_client_contributions.append((client_state, client_size_ratio))
+            ref_client_idx = client_idx
+            # If ref is width==1, always use it for interpolation
             if is_width1:
-                width1_client_state = client_state
-                width1_client_size = client_size_ratio
-                width1_client_idx = client_idx
-                width1_permuted_state = client_state  # No permutation for ref
+                interp_params_a = client_state
+                interp_size_a = client_size_ratio
+                interp_idx_a = client_idx
             # print(f"Skipping permutation for the reference model (size: {client_size}).")
             continue
 
@@ -435,12 +430,11 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu', 
 
         permuted_client_contributions.append((permuted_params_b, client_size_ratio))
         
-        # Track width==1 client
-        if is_width1:
-            width1_client_state = client_state
-            width1_client_size = client_size_ratio
-            width1_client_idx = client_idx
-            width1_permuted_state = permuted_params_b
+        # If no width==1 found yet and this client is width==1, use it for interpolation
+        if is_width1 and interp_params_a is None:
+            interp_params_a = permuted_params_b
+            interp_size_a = client_size_ratio
+            interp_idx_a = client_idx
         
         # print(f"Finished rearranging client model with size {client_size}.")
         
@@ -448,35 +442,36 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu', 
         # print(f"comm_round: {comm_round}, INTERPOLATION_ROUND: {config.INTERPOLATION_ROUND}, INTERPOLATION: {config.INTERPOLATION}, client_idx: {client_idx}, test_loader: {test_loader is not None}")
         if (comm_round <= config.INTERPOLATION_ROUND and config.INTERPOLATION and 
             client_idx <= 1 and test_loader is not None):
-            # Determine which state to use as params_a (prefer width==1)
-            if is_width1:
-                # Current client is width==1, use it as params_a
-                interp_params_a = permuted_params_b
-                interp_size_a = client_size_ratio
-                # Use the other client (ref) as params_b
-                interp_params_b = params_a
-                interp_size_b = target_size_ratio
-                print(f"\n[Interpolation - Rearrange] Starting experiment with client {client_idx} (width=1, size={interp_size_a}) vs client 0 (ref, size={interp_size_b})")
-            elif width1_client_state is not None:
-                # We already processed width==1 client, use it as params_a
-                interp_params_a = width1_permuted_state
-                interp_size_a = width1_client_size
-                interp_params_b = permuted_params_b
-                interp_size_b = client_size_ratio
-                print(f"\n[Interpolation - Rearrange] Starting experiment with client {width1_client_idx} (width=1, size={interp_size_a}) vs client {client_idx} (size={interp_size_b})")
+            # Use width==1 client as params_a if found, otherwise use ref
+            if interp_params_a is not None:
+                final_params_a = interp_params_a
+                final_size_a = interp_size_a
+                ref_label = " (ref)" if interp_idx_a == ref_client_idx else ""
+                
+                # Determine params_b based on who params_a is
+                if interp_idx_a == ref_client_idx:
+                    # params_a is ref, so params_b is current client
+                    final_params_b = permuted_params_b
+                    final_size_b = client_size_ratio
+                    print(f"\n[Interpolation - Rearrange] Starting experiment with client {interp_idx_a}{ref_label} (width=1, size={final_size_a}) vs client {client_idx} (size={final_size_b})")
+                else:
+                    # params_a is current client, so params_b is ref
+                    final_params_b = params_a
+                    final_size_b = target_size_ratio
+                    print(f"\n[Interpolation - Rearrange] Starting experiment with client {interp_idx_a} (width=1, size={final_size_a}) vs client {ref_client_idx} (ref, size={final_size_b})")
             else:
-                # No width==1 client yet, use ref as params_a
-                interp_params_a = params_a
-                interp_size_a = target_size_ratio
-                interp_params_b = permuted_params_b
-                interp_size_b = client_size_ratio
-                print(f"\n[Interpolation - Rearrange] Starting experiment between client 0 (ref, size={interp_size_a}) and client {client_idx} (size={interp_size_b})")
+                # No width==1 client yet, use ref as params_a and current as params_b
+                final_params_a = params_a
+                final_size_a = target_size_ratio
+                final_params_b = permuted_params_b
+                final_size_b = client_size_ratio
+                print(f"\n[Interpolation - Rearrange] Starting experiment between client {ref_client_idx} (ref, size={final_size_a}) and client {client_idx} (size={final_size_b})")
             
             interpolation_experiment(
-                params_a=interp_params_a,
-                params_b=interp_params_b,
-                size_a=interp_size_a,
-                size_b=interp_size_b,
+                params_a=final_params_a,
+                params_b=final_params_b,
+                size_a=final_size_a,
+                size_b=final_size_b,
                 test_loader=test_loader,
                 device=device,
                 match_mode=config.MATCH  # Use the same match mode as weight matching

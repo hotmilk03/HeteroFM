@@ -79,44 +79,79 @@ def vgg_permutation_spec() -> PermutationSpec:
         
     return permutation_spec_from_axes_to_perm(spec)
 
-def resnet50_permutation_spec() -> PermutationSpec:
-    """Permutation spec for the ResNet50 model."""
+def resnet_permutation_spec(model_name: str) -> PermutationSpec:
+    """Permutation spec for ResNet18/34/50/101/152 based on model name."""
+    model_name = model_name.lower()
+    if model_name in ["resnet18", "resnet34"]:
+        block_type = "basic"
+        if model_name == "resnet18":
+            num_blocks_list = [2, 2, 2, 2]
+        else:
+            num_blocks_list = [3, 4, 6, 3]
+    elif model_name in ["resnet50", "resnet101", "resnet152"]:
+        block_type = "bottleneck"
+        if model_name == "resnet50":
+            num_blocks_list = [3, 4, 6, 3]
+        elif model_name == "resnet101":
+            num_blocks_list = [3, 4, 23, 3]
+        else:
+            num_blocks_list = [3, 8, 36, 3]
+    else:
+        raise ValueError(f"Unsupported ResNet model: {model_name}")
+
     spec = {}
     spec["conv1.weight"] = ("P0", None, None, None)
-    spec["bn1.weight"] = ("P0",)
-    spec["bn1.bias"] = ("P0",)
+    
+    # ImageNet stem has maxpool (but no learnable params, so no spec needed)
+    # CIFAR-10 stem has no maxpool
 
-    def _add_block_spec(prefix, p_in, p_out_stage, block_num, has_shortcut_conv):
+    def _add_basic_block_spec(prefix, p_in, p_out_stage, block_num, has_shortcut_conv):
+        p_out_block = p_out_stage if has_shortcut_conv else p_in
+        p_mid = f"{p_out_stage}_B{block_num}_M"
+
+        spec[f"{prefix}.{block_num}.bn1.weight"] = (p_in,)
+        spec[f"{prefix}.{block_num}.bn1.bias"] = (p_in,)
+        spec[f"{prefix}.{block_num}.conv1.weight"] = (p_mid, p_in, None, None)
+        spec[f"{prefix}.{block_num}.bn2.weight"] = (p_mid,)
+        spec[f"{prefix}.{block_num}.bn2.bias"] = (p_mid,)
+        spec[f"{prefix}.{block_num}.conv2.weight"] = (p_out_block, p_mid, None, None)
+
+        if has_shortcut_conv:
+            spec[f"{prefix}.{block_num}.shortcut.weight"] = (p_out_block, p_in, None, None)
+        return p_out_block
+
+    def _add_bottleneck_block_spec(prefix, p_in, p_out_stage, block_num, has_shortcut_conv):
         p_out_block = p_out_stage if has_shortcut_conv else p_in
         p_mid_a = f"{p_out_stage}_B{block_num}_A"
         p_mid_b = f"{p_out_stage}_B{block_num}_B"
-        
-        spec[f"{prefix}.{block_num}.conv1.weight"] = (p_mid_a, p_in, None, None)
-        spec[f"{prefix}.{block_num}.bn1.weight"] = (p_mid_a,)
-        spec[f"{prefix}.{block_num}.bn1.bias"] = (p_mid_a,)
-        
-        spec[f"{prefix}.{block_num}.conv2.weight"] = (p_mid_b, p_mid_a, None, None)
-        spec[f"{prefix}.{block_num}.bn2.weight"] = (p_mid_b,)
-        spec[f"{prefix}.{block_num}.bn2.bias"] = (p_mid_b,)
 
+        spec[f"{prefix}.{block_num}.bn1.weight"] = (p_in,)
+        spec[f"{prefix}.{block_num}.bn1.bias"] = (p_in,)
+        spec[f"{prefix}.{block_num}.conv1.weight"] = (p_mid_a, p_in, None, None)
+        spec[f"{prefix}.{block_num}.bn2.weight"] = (p_mid_a,)
+        spec[f"{prefix}.{block_num}.bn2.bias"] = (p_mid_a,)
+        spec[f"{prefix}.{block_num}.conv2.weight"] = (p_mid_b, p_mid_a, None, None)
+        spec[f"{prefix}.{block_num}.bn3.weight"] = (p_mid_b,)
+        spec[f"{prefix}.{block_num}.bn3.bias"] = (p_mid_b,)
         spec[f"{prefix}.{block_num}.conv3.weight"] = (p_out_block, p_mid_b, None, None)
-        spec[f"{prefix}.{block_num}.bn3.weight"] = (p_out_block,)
-        spec[f"{prefix}.{block_num}.bn3.bias"] = (p_out_block,)
-        
+
         if has_shortcut_conv:
-            spec[f"{prefix}.{block_num}.shortcut.0.weight"] = (p_out_block, p_in, None, None)
-            spec[f"{prefix}.{block_num}.shortcut.1.weight"] = (p_out_block,)
-            spec[f"{prefix}.{block_num}.shortcut.1.bias"] = (p_out_block,)
+            spec[f"{prefix}.{block_num}.shortcut.weight"] = (p_out_block, p_in, None, None)
         return p_out_block
 
     p_in = "P0"
     p_stages = ["P1", "P2", "P3", "P4"]
-    num_blocks_list = [3, 4, 6, 3]
     for i_stage, (p_out_stage, num_blocks) in enumerate(zip(p_stages, num_blocks_list)):
         for i_block in range(num_blocks):
-            has_shortcut = (i_block == 0)
-            p_in = _add_block_spec(f"layer{i_stage+1}", p_in, p_out_stage, i_block, has_shortcut)
+            if block_type == "basic":
+                has_shortcut = (i_block == 0 and i_stage > 0)
+                p_in = _add_basic_block_spec(f"layer{i_stage+1}", p_in, p_out_stage, i_block, has_shortcut)
+            else:
+                has_shortcut = (i_block == 0)
+                p_in = _add_bottleneck_block_spec(f"layer{i_stage+1}", p_in, p_out_stage, i_block, has_shortcut)
 
+    spec["bn4.weight"] = (p_in,)
+    spec["bn4.bias"] = (p_in,)
     spec["linear.weight"] = (None, p_in)
     spec["linear.bias"] = (None,)
 

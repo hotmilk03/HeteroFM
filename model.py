@@ -111,8 +111,31 @@ class VGG(nn.Module):
         return nn.Sequential(*layers)
 
 # =============================================================================
-# ResNet Model (for ImageNet)
+# ResNet Model (for CIFAR-10 or ImageNet)
 # =============================================================================
+
+class Block(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_planes, planes, stride, scaler_rate, track):
+        super(Block, self).__init__()
+        self.bn1 = nn.BatchNorm2d(in_planes, momentum=None, track_running_stats=track)
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes, momentum=None, track_running_stats=track)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+
+        self.scaler = Scaler(scaler_rate)
+
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.scaler(x)))
+        shortcut = self.shortcut(out) if hasattr(self, 'shortcut') else x
+        out = self.conv1(out)
+        out = self.conv2(F.relu(self.bn2(self.scaler(out))))
+        out += shortcut
+        return out
 
 class Bottleneck(nn.Module):
     expansion = 4
@@ -122,76 +145,150 @@ class Bottleneck(nn.Module):
         self.track = track
         self.scaler_rate = scaler_rate
 
+        self.bn1 = nn.BatchNorm2d(in_planes, momentum=None, track_running_stats=self.track)
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes, momentum=None, track_running_stats=self.track)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes, momentum=None, track_running_stats=self.track)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(planes, momentum=None, track_running_stats=self.track)
         self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(self.expansion * planes, momentum=None, track_running_stats=self.track)
 
-        self.shortcut = nn.Sequential()
+        self.scaler = Scaler(self.scaler_rate)
+
         if stride != 1 or in_planes != self.expansion * planes:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion * planes, momentum=None, track_running_stats=self.track)
-            )
+            self.shortcut = nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False)
 
     def forward(self, x):
-        out = self.conv1(x)
-        out = F.relu(self.bn1(Scaler(self.scaler_rate)(out)))
-        out = self.conv2(out)
-        out = F.relu(self.bn2(Scaler(self.scaler_rate)(out)))
-        out = self.conv3(out)
-        out = self.bn3(Scaler(self.scaler_rate)(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
+        out = F.relu(self.bn1(self.scaler(x)))
+        shortcut = self.shortcut(out) if hasattr(self, 'shortcut') else x
+        out = self.conv1(out)
+        out = self.conv2(F.relu(self.bn2(self.scaler(out))))
+        out = self.conv3(F.relu(self.bn3(self.scaler(out))))
+        out += shortcut
         return out
 
-class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, w, scaler_rate=1.0, track=False, in_channels=3, num_classes=1000):
-        super(ResNet, self).__init__()
+# class ResNet(nn.Module):
+#     def __init__(self, block, num_blocks, w, scaler_rate=1.0, track=False, in_channels=3, num_classes=1000):
+#         super(ResNet, self).__init__()
         
-        base_width = int(w * config.RESNET_BASE_WIDTH)
-        base_width = max(1, base_width)
+#         base_width = int(w * config.RESNET_BASE_WIDTH)
+#         base_width = max(1, base_width)
 
-        self.in_planes = base_width
-        self.scaler_rate = scaler_rate
-        self.track = track
+#         self.in_planes = base_width
+#         self.scaler_rate = scaler_rate
+#         self.track = track
 
-        self.conv1 = nn.Conv2d(in_channels, base_width, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(base_width, momentum=None, track_running_stats=self.track)
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+#         self.conv1 = nn.Conv2d(in_channels, base_width, kernel_size=7, stride=2, padding=3, bias=False)
+#         self.bn1 = nn.BatchNorm2d(base_width, momentum=None, track_running_stats=self.track)
+#         self.relu = nn.ReLU(inplace=True)
+#         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        self.layer1 = self._make_layer(block, base_width, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, base_width*2, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, base_width*4, num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(block, base_width*8, num_blocks[3], stride=2)
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.linear = nn.Linear(base_width*8*block.expansion, num_classes)
+#         self.layer1 = self._make_layer(block, base_width, num_blocks[0], stride=1)
+#         self.layer2 = self._make_layer(block, base_width*2, num_blocks[1], stride=2)
+#         self.layer3 = self._make_layer(block, base_width*4, num_blocks[2], stride=2)
+#         self.layer4 = self._make_layer(block, base_width*8, num_blocks[3], stride=2)
+#         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+#         self.linear = nn.Linear(base_width*8*block.expansion, num_classes)
 
-    def _make_layer(self, block, planes, num_blocks, stride):
+#     def _make_layer(self, block, planes, num_blocks, stride):
+#         strides = [stride] + [1] * (num_blocks - 1)
+#         layers = []
+#         for stride in strides:
+#             layers.append(block(self.in_planes, planes, stride, self.scaler_rate, self.track))
+#             self.in_planes = planes * block.expansion
+#         return nn.Sequential(*layers)
+
+#     def forward(self, x):
+#         out = self.relu(self.bn1(Scaler(self.scaler_rate)(self.conv1(x))))
+#         out = self.maxpool(out)
+#         out = self.layer1(out)
+#         out = self.layer2(out)
+#         out = self.layer3(out)
+#         out = self.layer4(out)
+#         out = self.avgpool(out)
+#         out = torch.flatten(out, 1)
+#         out = self.linear(out)
+#         return out
+
+class ResNet(nn.Module):
+    def __init__(self, data_shape, hidden_size, block, num_blocks, num_classes, rate, track, use_imagenet_stem=False):
+        super(ResNet, self).__init__()
+        self.in_planes = hidden_size[0]
+        self.use_imagenet_stem = use_imagenet_stem
+        
+        if use_imagenet_stem:
+            # ImageNet-style: 7x7 conv, stride=2, maxpool
+            self.conv1 = nn.Conv2d(data_shape[0], hidden_size[0], kernel_size=7, stride=2, padding=3, bias=False)
+            self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        else:
+            # CIFAR-10-style: 3x3 conv, stride=1, no maxpool
+            self.conv1 = nn.Conv2d(data_shape[0], hidden_size[0], kernel_size=3, stride=1, padding=1, bias=False)
+        
+        self.layer1 = self._make_layer(block, hidden_size[0], num_blocks[0], stride=1, rate=rate, track=track)
+        self.layer2 = self._make_layer(block, hidden_size[1], num_blocks[1], stride=2, rate=rate, track=track)
+        self.layer3 = self._make_layer(block, hidden_size[2], num_blocks[2], stride=2, rate=rate, track=track)
+        self.layer4 = self._make_layer(block, hidden_size[3], num_blocks[3], stride=2, rate=rate, track=track)
+        self.bn4 = nn.BatchNorm2d(hidden_size[3] * block.expansion, momentum=None, track_running_stats=track)
+        
+        self.scaler = Scaler(rate)
+        self.linear = nn.Linear(hidden_size[3] * block.expansion, num_classes)
+
+    def _make_layer(self, block, planes, num_blocks, stride, rate, track):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
-        for strd in strides:
-            layers.append(block(self.in_planes, planes, strd, self.scaler_rate, self.track))
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride, rate, track))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        out = self.relu(self.bn1(Scaler(self.scaler_rate)(self.conv1(x))))
-        out = self.maxpool(out)
+        out = self.conv1(x)
+        if self.use_imagenet_stem:
+            out = self.maxpool(out)
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
         out = self.layer4(out)
-        out = self.avgpool(out)
-        out = torch.flatten(out, 1)
+        out = F.relu(self.bn4(self.scaler(out)))
+        out = F.adaptive_avg_pool2d(out, 1)
+        out = out.view(out.size(0), -1)
         out = self.linear(out)
         return out
 
-def ResNet50(w, scaler_rate, track, in_channels, num_classes):
-    return ResNet(Bottleneck, [3, 4, 6, 3], w, scaler_rate, track, in_channels, num_classes)
+def _get_resnet_dataset_defaults():
+    if config.DATA_SET == 'mnist':
+        return 10, (1, 28, 28)
+    if config.DATA_SET == 'cifar10':
+        return 10, (3, 32, 32)
+    if config.DATA_SET == 'imagenet':
+        return int(1000 * config.IMAGENET_SUBSET_RATIO), (3, 224, 224)
+    raise ValueError(f"Unknown dataset: {config.DATA_SET}")
+
+def _build_resnet_inputs(w):
+    num_classes, data_shape = _get_resnet_dataset_defaults()
+
+    base_width = max(1, int(w * config.RESNET_BASE_WIDTH))
+    hidden_size = [base_width, base_width * 2, base_width * 4, base_width * 8]
+    return data_shape, hidden_size, num_classes
+
+def ResNet18(w, scaler_rate=1.0, track=False, in_channels=None, num_classes=None):
+    data_shape, hidden_size, num_classes = _build_resnet_inputs(w)
+    return ResNet(data_shape, hidden_size, Block, [2, 2, 2, 2], num_classes, scaler_rate, track, use_imagenet_stem=False)
+
+def ResNet34(w, scaler_rate=1.0, track=False, in_channels=None, num_classes=None):
+    data_shape, hidden_size, num_classes = _build_resnet_inputs(w)
+    return ResNet(data_shape, hidden_size, Block, [3, 4, 6, 3], num_classes, scaler_rate, track, use_imagenet_stem=False)
+
+def ResNet50(w, scaler_rate=1.0, track=False, in_channels=None, num_classes=None):
+    data_shape, hidden_size, num_classes = _build_resnet_inputs(w)
+    return ResNet(data_shape, hidden_size, Bottleneck, [3, 4, 6, 3], num_classes, scaler_rate, track, use_imagenet_stem=True)
+
+def ResNet101(w, scaler_rate=1.0, track=False, in_channels=None, num_classes=None):
+    data_shape, hidden_size, num_classes = _build_resnet_inputs(w)
+    return ResNet(data_shape, hidden_size, Bottleneck, [3, 4, 23, 3], num_classes, scaler_rate, track, use_imagenet_stem=True)
+
+def ResNet152(w, scaler_rate=1.0, track=False, in_channels=None, num_classes=None):
+    data_shape, hidden_size, num_classes = _build_resnet_inputs(w)
+    return ResNet(data_shape, hidden_size, Bottleneck, [3, 8, 36, 3], num_classes, scaler_rate, track, use_imagenet_stem=True)
 
 # =============================================================================
 # Model Factory
@@ -237,8 +334,16 @@ def init_model(w, scaler_rate=1.0, seed=None):
         model = MLP3(w, scaler_rate, False, in_channels, num_classes)
     elif config.MODEL == 'vgg11':
         model = VGG('VGG11', w, scaler_rate, False, in_channels, num_classes)
+    elif config.MODEL == 'resnet18':
+        model = ResNet18(w, scaler_rate, False, in_channels, num_classes)
+    elif config.MODEL == 'resnet34':
+        model = ResNet34(w, scaler_rate, False, in_channels, num_classes)
     elif config.MODEL == 'resnet50':
         model = ResNet50(w, scaler_rate, False, in_channels, num_classes)
+    elif config.MODEL == 'resnet101':
+        model = ResNet101(w, scaler_rate, False, in_channels, num_classes)
+    elif config.MODEL == 'resnet152':
+        model = ResNet152(w, scaler_rate, False, in_channels, num_classes)
     else:
         raise ValueError(f"Unknown model: {config.MODEL}")
         
