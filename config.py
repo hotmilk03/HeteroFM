@@ -7,14 +7,14 @@ All tunable parameters are centralized here.
 # FEDERATED LEARNING PARAMETERS
 # =============================================================================
 
-COMMUNICATION_ROUNDS = 100
+COMMUNICATION_ROUNDS = 10
 LOCAL_EPOCHS = 5 # 40
 
 # =============================================================================
 # MODEL PARAMETERS
 # =============================================================================
 
-MODEL = 'resnet50' # 'mlp2', 'mlp3', 'vgg11', 'resnet50'
+MODEL = 'resnet50' # 'mlp2', 'mlp3', 'vgg11', 'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152'
 
 VGG_WIDTH_MULTIPLIER = 1 # 8
 VGG_CFG_ORIGIN = {
@@ -29,6 +29,10 @@ MLP_BASE_WIDTH = 1024 # * 16
 VGG_BASE_WIDTH = 512 * VGG_WIDTH_MULTIPLIER  # Defines the width of the VGG model that w=1.0 corresponds to
 RESNET_BASE_WIDTH = 64
 
+# Normalization layer option for Conv models
+# Options: 'bn', 'in', 'ln', 'gn', 'none'
+NORM = 'gn'
+
 W_CLIENT = [1,1,1,1,1,1,1,1,1,1] # [1/8, 1/8, 1/4, 1/4, 1/2, 1/2, 1/2, 1, 1, 1]
 NUM_CLIENTS = len(W_CLIENT)
 MAX_W = max(W_CLIENT)
@@ -42,7 +46,11 @@ model_to_dataset = {
     'mlp2': 'mnist',
     'mlp3': 'mnist',
     'vgg11': 'cifar10',
-    'resnet50': 'imagenet'
+    'resnet18': 'cifar10',
+    'resnet34': 'cifar10',
+    'resnet50': 'imagenet',
+    'resnet101': 'imagenet',
+    'resnet152': 'imagenet',
 }
 DATA_SET = model_to_dataset[MODEL] # 'mnist', 'cifar10', 'imagenet'
 
@@ -119,9 +127,9 @@ DRAW = 'all' # 'acc' or 'loss' or 'all'
 # =============================================================================
 
 INTERPOLATION = True
-INTERPOLATION_ROUND = 10
+INTERPOLATION_ROUND = 100
 INTERPOLATION_LAMBDA_START = -0.2
 INTERPOLATION_LAMBDA_END = 1.2
-INTERPOLATION_LAMBDA_STEP = 0.02  # 0.1 or 0.02
-INTERPOLATION_ANIMATION = False  # True for animated plot, False for static plot
+INTERPOLATION_LAMBDA_STEP = 0.1  # 0.1 or 0.02
+INTERPOLATION_ANIMATION = True  # True for animated plot, False for static plot
 INTERPOLATION_3D = False  # True for 3D plot, False for 2D plot

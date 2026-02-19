@@ -20,6 +20,25 @@ def init_param(m):
     #     if m.bias is not None:
     #         m.bias.data.zero_()
 
+def _get_gn_groups(num_channels, desired_groups=4):
+    if num_channels % desired_groups == 0:
+        return desired_groups
+    return 1
+
+def _get_norm2d(num_channels, track):
+    norm = getattr(config, 'NORM', 'bn')
+    if norm == 'bn':
+        return nn.BatchNorm2d(num_channels, momentum=None, track_running_stats=track)
+    if norm == 'in':
+        return nn.GroupNorm(num_channels, num_channels)
+    if norm == 'ln':
+        return nn.GroupNorm(1, num_channels)
+    if norm == 'gn':
+        return nn.GroupNorm(_get_gn_groups(num_channels), num_channels)
+    if norm == 'none':
+        return nn.Identity()
+    raise ValueError(f"Unknown norm: {norm}")
+
 # =============================================================================
 # MLP Models (for MNIST)
 # =============================================================================
@@ -103,7 +122,7 @@ class VGG(nn.Module):
                 layers += [
                     nn.Conv2d(current_in_channels, out_channels, kernel_size=3, padding=1, bias=False),
                     Scaler(self.scaler_rate),
-                    nn.BatchNorm2d(out_channels, momentum=None, track_running_stats=self.track),
+                    _get_norm2d(out_channels, self.track),
                     nn.ReLU(inplace=True)
                 ]
                 current_in_channels = out_channels
@@ -119,9 +138,9 @@ class Block(nn.Module):
 
     def __init__(self, in_planes, planes, stride, scaler_rate, track):
         super(Block, self).__init__()
-        self.bn1 = nn.BatchNorm2d(in_planes, momentum=None, track_running_stats=track)
+        self.n1 = _get_norm2d(in_planes, track)
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes, momentum=None, track_running_stats=track)
+        self.n2 = _get_norm2d(planes, track)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
 
         self.scaler = Scaler(scaler_rate)
@@ -130,10 +149,10 @@ class Block(nn.Module):
             self.shortcut = nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False)
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.scaler(x)))
+        out = F.relu(self.n1(self.scaler(x)))
         shortcut = self.shortcut(out) if hasattr(self, 'shortcut') else x
         out = self.conv1(out)
-        out = self.conv2(F.relu(self.bn2(self.scaler(out))))
+        out = self.conv2(F.relu(self.n2(self.scaler(out))))
         out += shortcut
         return out
 
@@ -145,11 +164,11 @@ class Bottleneck(nn.Module):
         self.track = track
         self.scaler_rate = scaler_rate
 
-        self.bn1 = nn.BatchNorm2d(in_planes, momentum=None, track_running_stats=self.track)
+        self.n1 = _get_norm2d(in_planes, self.track)
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes, momentum=None, track_running_stats=self.track)
+        self.n2 = _get_norm2d(planes, self.track)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(planes, momentum=None, track_running_stats=self.track)
+        self.n3 = _get_norm2d(planes, self.track)
         self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
 
         self.scaler = Scaler(self.scaler_rate)
@@ -158,11 +177,11 @@ class Bottleneck(nn.Module):
             self.shortcut = nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False)
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.scaler(x)))
+        out = F.relu(self.n1(self.scaler(x)))
         shortcut = self.shortcut(out) if hasattr(self, 'shortcut') else x
         out = self.conv1(out)
-        out = self.conv2(F.relu(self.bn2(self.scaler(out))))
-        out = self.conv3(F.relu(self.bn3(self.scaler(out))))
+        out = self.conv2(F.relu(self.n2(self.scaler(out))))
+        out = self.conv3(F.relu(self.n3(self.scaler(out))))
         out += shortcut
         return out
 
@@ -218,6 +237,7 @@ class ResNet(nn.Module):
         if use_imagenet_stem:
             # ImageNet-style: 7x7 conv, stride=2, maxpool
             self.conv1 = nn.Conv2d(data_shape[0], hidden_size[0], kernel_size=7, stride=2, padding=3, bias=False)
+            self.n1 = _get_norm2d(hidden_size[0], track)
             self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         else:
             # CIFAR-10-style: 3x3 conv, stride=1, no maxpool
@@ -227,7 +247,7 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, hidden_size[1], num_blocks[1], stride=2, rate=rate, track=track)
         self.layer3 = self._make_layer(block, hidden_size[2], num_blocks[2], stride=2, rate=rate, track=track)
         self.layer4 = self._make_layer(block, hidden_size[3], num_blocks[3], stride=2, rate=rate, track=track)
-        self.bn4 = nn.BatchNorm2d(hidden_size[3] * block.expansion, momentum=None, track_running_stats=track)
+        self.n4 = _get_norm2d(hidden_size[3] * block.expansion, track)
         
         self.scaler = Scaler(rate)
         self.linear = nn.Linear(hidden_size[3] * block.expansion, num_classes)
@@ -243,12 +263,13 @@ class ResNet(nn.Module):
     def forward(self, x):
         out = self.conv1(x)
         if self.use_imagenet_stem:
+            out = F.relu(self.n1(out))
             out = self.maxpool(out)
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
         out = self.layer4(out)
-        out = F.relu(self.bn4(self.scaler(out)))
+        out = F.relu(self.n4(self.scaler(out)))
         out = F.adaptive_avg_pool2d(out, 1)
         out = out.view(out.size(0), -1)
         out = self.linear(out)
