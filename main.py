@@ -135,6 +135,7 @@ def print_info(label_splits):
     print("=== HeteroFM Configuration ===")
     print("=================================")
     print(f"  - Model: {config.MODEL}")
+    print(f"  - Norm: {config.NORM}")
     print(f"  - Dataset: {config.DATA_SET}")
     if config.MODEL == 'vgg11':
         print(f"    - VGG Width Multiplier: {config.VGG_WIDTH_MULTIPLIER}")
@@ -187,6 +188,8 @@ def parse_args():
                         help='Client width ratios (comma-separated, e.g., "1,1,0.5,0.5")')
     parser.add_argument('--vgg-width-multiplier', type=int, default=None,
                         help='VGG channel width multiplier (e.g., 1, 2, 4, 8)')
+    parser.add_argument('--norm', type=str, default=None, choices=['bn', 'in', 'ln', 'gn', 'none'],
+                        help='Normalization layer type (bn=BatchNorm, in=InstanceNorm, ln=LayerNorm, gn=GroupNorm, none=no norm)')
     
     # Training parameters
     parser.add_argument('--rounds', type=int, default=None,
@@ -278,6 +281,9 @@ def apply_args_to_config(args):
             for key in config.VGG_CFG_ORIGIN
         }
         config.VGG_BASE_WIDTH = 512 * config.VGG_WIDTH_MULTIPLIER
+    
+    if args.norm is not None:
+        config.NORM = args.norm
     
     if args.rounds is not None:
         config.COMMUNICATION_ROUNDS = args.rounds
@@ -654,9 +660,14 @@ def main():
         print(f"  - Test Loss: {final_loss:.4f}")
         print(f"  - Accuracy: {final_accuracy:.2f}%")
 
+    if is_dist and dist.is_initialized():
+        dist.destroy_process_group()
+
 if __name__ == '__main__':
     try:
         main()
     except Exception:
         print("\n--- AN ERROR OCCURRED ---")
         print(traceback.format_exc())
+        if dist.is_initialized():
+            dist.destroy_process_group()

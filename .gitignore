@@ -3,6 +3,12 @@ __pycache__/
 results_*/
 *.log
 *.png
+*.gif
+*.pdf
 *.sh
 *.out
 *.err
+*.csv
+*_csv.py
+*.tar
+*.tar.gz

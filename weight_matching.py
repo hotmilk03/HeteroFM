@@ -51,6 +51,7 @@ def mlp3_permutation_spec() -> PermutationSpec:
 def vgg_permutation_spec() -> PermutationSpec:
     """Permutation spec for the VGG11 model, matching the structure in model.py."""
     spec = {}
+    norm_has_params = getattr(config, 'NORM', 'bn') != 'none'
     layer_idx = 0
     perm_idx = 0
     in_perm = None
@@ -65,8 +66,9 @@ def vgg_permutation_spec() -> PermutationSpec:
         out_perm = f"P_{perm_idx}"
         
         spec[f"{conv_layer}.weight"] = (out_perm, in_perm, None, None)
-        spec[f"{bn_layer}.weight"] = (out_perm,)
-        spec[f"{bn_layer}.bias"] = (out_perm,)
+        if norm_has_params:
+            spec[f"{bn_layer}.weight"] = (out_perm,)
+            spec[f"{bn_layer}.bias"] = (out_perm,)
         
         layer_idx += 4
         in_perm = out_perm
@@ -82,6 +84,7 @@ def vgg_permutation_spec() -> PermutationSpec:
 def resnet_permutation_spec(model_name: str) -> PermutationSpec:
     """Permutation spec for ResNet18/34/50/101/152 based on model name."""
     model_name = model_name.lower()
+    norm_has_params = getattr(config, 'NORM', 'bn') != 'none'
     if model_name in ["resnet18", "resnet34"]:
         block_type = "basic"
         if model_name == "resnet18":
@@ -101,6 +104,9 @@ def resnet_permutation_spec(model_name: str) -> PermutationSpec:
 
     spec = {}
     spec["conv1.weight"] = ("P0", None, None, None)
+    if model_name in ["resnet50", "resnet101", "resnet152"] and norm_has_params:
+        spec["n1.weight"] = ("P0",)
+        spec["n1.bias"] = ("P0",)
     
     # ImageNet stem has maxpool (but no learnable params, so no spec needed)
     # CIFAR-10 stem has no maxpool
@@ -109,11 +115,13 @@ def resnet_permutation_spec(model_name: str) -> PermutationSpec:
         p_out_block = p_out_stage if has_shortcut_conv else p_in
         p_mid = f"{p_out_stage}_B{block_num}_M"
 
-        spec[f"{prefix}.{block_num}.bn1.weight"] = (p_in,)
-        spec[f"{prefix}.{block_num}.bn1.bias"] = (p_in,)
+        if norm_has_params:
+            spec[f"{prefix}.{block_num}.n1.weight"] = (p_in,)
+            spec[f"{prefix}.{block_num}.n1.bias"] = (p_in,)
         spec[f"{prefix}.{block_num}.conv1.weight"] = (p_mid, p_in, None, None)
-        spec[f"{prefix}.{block_num}.bn2.weight"] = (p_mid,)
-        spec[f"{prefix}.{block_num}.bn2.bias"] = (p_mid,)
+        if norm_has_params:
+            spec[f"{prefix}.{block_num}.n2.weight"] = (p_mid,)
+            spec[f"{prefix}.{block_num}.n2.bias"] = (p_mid,)
         spec[f"{prefix}.{block_num}.conv2.weight"] = (p_out_block, p_mid, None, None)
 
         if has_shortcut_conv:
@@ -125,14 +133,17 @@ def resnet_permutation_spec(model_name: str) -> PermutationSpec:
         p_mid_a = f"{p_out_stage}_B{block_num}_A"
         p_mid_b = f"{p_out_stage}_B{block_num}_B"
 
-        spec[f"{prefix}.{block_num}.bn1.weight"] = (p_in,)
-        spec[f"{prefix}.{block_num}.bn1.bias"] = (p_in,)
+        if norm_has_params:
+            spec[f"{prefix}.{block_num}.n1.weight"] = (p_in,)
+            spec[f"{prefix}.{block_num}.n1.bias"] = (p_in,)
         spec[f"{prefix}.{block_num}.conv1.weight"] = (p_mid_a, p_in, None, None)
-        spec[f"{prefix}.{block_num}.bn2.weight"] = (p_mid_a,)
-        spec[f"{prefix}.{block_num}.bn2.bias"] = (p_mid_a,)
+        if norm_has_params:
+            spec[f"{prefix}.{block_num}.n2.weight"] = (p_mid_a,)
+            spec[f"{prefix}.{block_num}.n2.bias"] = (p_mid_a,)
         spec[f"{prefix}.{block_num}.conv2.weight"] = (p_mid_b, p_mid_a, None, None)
-        spec[f"{prefix}.{block_num}.bn3.weight"] = (p_mid_b,)
-        spec[f"{prefix}.{block_num}.bn3.bias"] = (p_mid_b,)
+        if norm_has_params:
+            spec[f"{prefix}.{block_num}.n3.weight"] = (p_mid_b,)
+            spec[f"{prefix}.{block_num}.n3.bias"] = (p_mid_b,)
         spec[f"{prefix}.{block_num}.conv3.weight"] = (p_out_block, p_mid_b, None, None)
 
         if has_shortcut_conv:
@@ -150,8 +161,9 @@ def resnet_permutation_spec(model_name: str) -> PermutationSpec:
                 has_shortcut = (i_block == 0)
                 p_in = _add_bottleneck_block_spec(f"layer{i_stage+1}", p_in, p_out_stage, i_block, has_shortcut)
 
-    spec["bn4.weight"] = (p_in,)
-    spec["bn4.bias"] = (p_in,)
+    if norm_has_params:
+        spec["n4.weight"] = (p_in,)
+        spec["n4.bias"] = (p_in,)
     spec["linear.weight"] = (None, p_in)
     spec["linear.bias"] = (None,)
 

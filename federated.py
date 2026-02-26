@@ -29,6 +29,8 @@ def evaluate(model, test_loader, device):
     accuracy = 100. * correct / len(test_loader.dataset)
     return test_loss, accuracy
 
+# client local update (learning local epoch)
+## get global model state -> evaluate (prev) -> local update -> evaluate (current, bef permutation)
 def client_update(client_loader, test_loader, local_test_loader, global_model_state, client_size_ratio, scaler_rate, label_split, use_masked_loss, grad_clip_norm, local_epochs, learning_rate, momentum, weight_decay, device, previous_client_state=None, client_id=None):
     # Initialize local model state from previous round or create fresh weights
     # Assumption: client model shape remains constant across rounds
@@ -322,7 +324,7 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu', 
     """
     Aggregates heterogeneous client models by first finding a permutation to align neurons
     and then averaging. The reference model selection depends on MATCH mode:
-    - Extension (E): Use largest model as reference (since global model is MAX_W)
+    - Extension (E): Use smallest model as reference (since global model is MAX_W)
     - Contraction (C): Use smallest model as reference (since global model is MIN_W)
     
     Args:
