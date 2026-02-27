@@ -236,6 +236,10 @@ def parse_args():
                         help='Second match mode to interpolate with')
     parser.add_argument('--interpolate-weight', type=float, default=None,
                         help='Weight for interpolation (0.0 to 1.0)')
+    parser.add_argument('--global-model-interpolate', action='store_true', default=None,
+                        help='Use weighted interpolation for global model size (True) or E-dominant rule (False)')
+    parser.add_argument('--no-global-model-interpolate', action='store_false', dest='global_model_interpolate',
+                        help='Use E-dominant rule for global model size')
     
     # Model Interpolation parameters
     parser.add_argument('--client-interpolation', action='store_true', default=None,
@@ -333,6 +337,9 @@ def apply_args_to_config(args):
     if args.interpolate_weight is not None:
         config.INTERPOLATE_WEIGHT = args.interpolate_weight
     
+    if args.global_model_interpolate is not None:
+        config.GLOBAL_MODEL_INTERPOLATE = args.global_model_interpolate
+    
     if args.interpolation is not None:
         config.INTERPOLATION = args.interpolation
     
@@ -364,12 +371,27 @@ def main():
     # Initialize global model with base seed (0 for global model)
     global_seed = config.SEED if (hasattr(config, 'SEED') and config.SEED is not None) else None
     if config.REARRANGE:
-        if config.MATCH == 'C':
-            global_model = model.init_model(config.MIN_W, seed=global_seed).to(server_device)
-        elif config.MATCH == 'E':
-            global_model = model.init_model(config.MAX_W, seed=global_seed).to(server_device)
+        if config.REARRANGE_INTERPOLATE:
+            def _match_to_w(match):
+                return config.MAX_W if match == 'E' else config.MIN_W
+            if config.GLOBAL_MODEL_INTERPOLATE:
+                # Method 2: weighted interpolation of global sizes
+                w = config.INTERPOLATE_WEIGHT
+                global_w = _match_to_w(config.MATCH) * (1 - w) + _match_to_w(config.MATCH_INTERPOLATE) * w
+            else:
+                # Method 1: E-dominant — if either MATCH or MATCH_INTERPOLATE is 'E', use MAX_W
+                if config.MATCH == 'E' or config.MATCH_INTERPOLATE == 'E':
+                    global_w = config.MAX_W
+                else:
+                    global_w = config.MIN_W
+            global_model = model.init_model(global_w, seed=global_seed).to(server_device)
         else:
-            raise ValueError(f"Unknown MATCH mode: {config.MATCH}")
+            if config.MATCH == 'C':
+                global_model = model.init_model(config.MIN_W, seed=global_seed).to(server_device)
+            elif config.MATCH == 'E':
+                global_model = model.init_model(config.MAX_W, seed=global_seed).to(server_device)
+            else:
+                raise ValueError(f"Unknown MATCH mode: {config.MATCH}")
     else:
         global_model = model.init_model(config.MAX_W, seed=global_seed).to(server_device)
 

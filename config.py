@@ -97,6 +97,9 @@ REARRANGE_INTERPOLATE = False  # Enable interpolation between two mode pairs
 PERMUTE_INTERPOLATE = 'Z'  # Second permute mode to interpolate with
 MATCH_INTERPOLATE = 'E'    # Second match mode to interpolate with
 INTERPOLATE_WEIGHT = 0.5   # Weight for interpolation (0.5 = equal mix)
+# False: if either MATCH or MATCH_INTERPOLATE is 'E', use MAX_W as global model size
+# True:  weighted interpolation: size = size(MATCH)*(1-w) + size(MATCH_INTERPOLATE)*w
+GLOBAL_MODEL_INTERPOLATE = False
 
 SINKHORN = False
 SINKHORN_MAX_ITER = 50  # Maximum GD iterations (50-100 needed for Hungarian parity)
