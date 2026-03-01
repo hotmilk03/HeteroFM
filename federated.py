@@ -124,85 +124,70 @@ def client_update(client_loader, test_loader, local_test_loader, global_model_st
 
     return final_state_dict, client_size_ratio, metrics
 
-def interpolation_experiment(params_a, params_b, size_a, size_b, test_loader, device='cpu', match_mode=None):
+def _compute_global_w():
+    """Replicates the global model size logic from main.py based on current config."""
+    if config.REARRANGE:
+        if config.REARRANGE_INTERPOLATE:
+            def _match_to_w(match):
+                return config.MAX_W if match == 'E' else config.MIN_W
+            if config.GLOBAL_MODEL_INTERPOLATE:
+                w = config.INTERPOLATE_WEIGHT
+                return _match_to_w(config.MATCH) * (1 - w) + _match_to_w(config.MATCH_INTERPOLATE) * w
+            else:
+                if config.MATCH == 'E' or config.MATCH_INTERPOLATE == 'E':
+                    return config.MAX_W
+                else:
+                    return config.MIN_W
+        else:
+            return config.MAX_W if config.MATCH == 'E' else config.MIN_W
+    else:
+        return config.MAX_W
+
+def interpolation_experiment(params_a, params_b, size_a, size_b, test_loader, device='cpu', eval_size=None):
     """
     Performs interpolation experiment between two aligned models.
-    Lambda ranges from -0.2 to 1.2 in steps of 0.02.
-    
+    Both models are aligned to eval_size (zero-padded if smaller, truncated if larger),
+    mirroring exactly how the global model is sized during aggregation.
+
     Args:
         params_a: First model parameters (already permuted)
         params_b: Second model parameters (already permuted)
-        size_a: Size ratio of first model
-        size_b: Size ratio of second model
+        size_a: Size ratio of first model (for display only)
+        size_b: Size ratio of second model (for display only)
         test_loader: Test dataset loader for evaluation
         device: Device for evaluation
-        match_mode: 'E' (Extension), 'C' (Contraction), or None (HeteroFL - zero padding)
+        eval_size: Width ratio to evaluate at (matches global model size). Defaults to MAX_W.
     """
+    if eval_size is None:
+        eval_size = config.MAX_W
+
     print("\n" + "="*80)
     print("Starting Interpolation Experiment between first two clients")
-    print(f"Match mode: {match_mode if match_mode else 'HeteroFL (zero padding)'}")
+    print(f"Eval size: {eval_size}")
     print("="*80)
-    
-    lambdas = np.arange(config.INTERPOLATION_LAMBDA_START, config.INTERPOLATION_LAMBDA_END + config.INTERPOLATION_LAMBDA_STEP, config.INTERPOLATION_LAMBDA_STEP)  # -0.2 to 1.2, step 0.02
+
+    lambdas = np.arange(config.INTERPOLATION_LAMBDA_START, config.INTERPOLATION_LAMBDA_END + config.INTERPOLATION_LAMBDA_STEP, config.INTERPOLATION_LAMBDA_STEP)
     results = []
-    
-    # Prepare aligned models based on match_mode
+
+    # Get target shapes from a reference model of eval_size
+    ref_model = init_model(eval_size)
+    ref_state = ref_model.state_dict()
+    del ref_model
+
+    def _align_to_target(param, target_shape):
+        """Zero-pad or truncate param to target_shape."""
+        result = torch.zeros(target_shape, dtype=param.dtype, device=param.device)
+        slices = tuple(slice(0, min(s, t)) for s, t in zip(param.shape, target_shape))
+        result[slices] = param[slices]
+        return result
+
     aligned_params_a = {}
     aligned_params_b = {}
-    
-    if match_mode is None or match_mode == 'E':
-        # HeteroFL or Extension mode: Align to the larger model size with zero padding
-        max_size = max(size_a, size_b)
-        
-        for key in params_a:
-            if key in params_b:
-                shape_a = params_a[key].shape
-                shape_b = params_b[key].shape
-                
-                # Determine target shape (maximum of both dimensions)
-                target_shape = tuple(max(dim_a, dim_b) for dim_a, dim_b in zip(shape_a, shape_b))
-                
-                # Zero-pad params_a to target shape
-                param_a_padded = torch.zeros(target_shape, dtype=params_a[key].dtype, device=params_a[key].device)
-                slices_a = tuple(slice(0, dim) for dim in shape_a)
-                param_a_padded[slices_a] = params_a[key]
-                
-                # Zero-pad params_b to target shape
-                param_b_padded = torch.zeros(target_shape, dtype=params_b[key].dtype, device=params_b[key].device)
-                slices_b = tuple(slice(0, dim) for dim in shape_b)
-                param_b_padded[slices_b] = params_b[key]
-                
-                aligned_params_a[key] = param_a_padded
-                aligned_params_b[key] = param_b_padded
-        
-        eval_size = max_size
-        
-    elif match_mode == 'C':
-        # Contraction mode: Align to the smaller model size
-        min_size = min(size_a, size_b)
-        
-        for key in params_a:
-            if key in params_b:
-                shape_a = params_a[key].shape
-                shape_b = params_b[key].shape
-                
-                # Determine target shape (minimum of both dimensions)
-                target_shape = tuple(min(dim_a, dim_b) for dim_a, dim_b in zip(shape_a, shape_b))
-                
-                # Contract params_a to target shape
-                slices = tuple(slice(0, dim) for dim in target_shape)
-                param_a_contracted = params_a[key][slices]
-                
-                # Contract params_b to target shape
-                param_b_contracted = params_b[key][slices]
-                
-                aligned_params_a[key] = param_a_contracted
-                aligned_params_b[key] = param_b_contracted
-        
-        eval_size = min_size
-    
-    else:
-        raise ValueError(f"Invalid match_mode: {match_mode}")
+    for key, ref_param in ref_state.items():
+        if key in params_a and key in params_b:
+            target_shape = ref_param.shape
+            aligned_params_a[key] = _align_to_target(params_a[key], target_shape)
+            aligned_params_b[key] = _align_to_target(params_b[key], target_shape)
     
     # Now interpolate between aligned models
     for lam in lambdas:
@@ -287,7 +272,7 @@ def aggregate_heterofl(global_model_state, client_contributions, device='cpu', c
             size_b=size_b,
             test_loader=test_loader,
             device=device,
-            match_mode=None  # HeteroFL uses zero padding
+            eval_size=config.MAX_W  # HeteroFL global is always MAX_W
         )
     
     # Create a zero-initialized state for aggregation and a counter
@@ -476,7 +461,7 @@ def aggregate_rearrange(global_model_state, client_contributions, device='cpu', 
                 size_b=final_size_b,
                 test_loader=test_loader,
                 device=device,
-                match_mode=config.MATCH  # Use the same match mode as weight matching
+                eval_size=_compute_global_w()
             )
 
     # Aggregate the permuted models on GPU

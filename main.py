@@ -158,6 +158,7 @@ def print_info(label_splits):
             print(f"    - Interpolation Permute Mode: {config.PERMUTE_INTERPOLATE}")
             print(f"    - Interpolation Match Mode: {config.MATCH_INTERPOLATE}")
             print(f"    - Interpolation Weight: {config.INTERPOLATE_WEIGHT}")
+            print(f"    - Global Model Interpolation Method: {'Weighted' if config.GLOBAL_MODEL_INTERPOLATE else 'E-dominant'}")
         print(f"  - Sinkhorn: {config.SINKHORN}")
         if config.SINKHORN:
             print(f"    - Sinkhorn Lambda: {config.SINKHORN_LAMBDA}")
