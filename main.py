@@ -158,7 +158,8 @@ def print_info(label_splits):
             print(f"    - Interpolation Permute Mode: {config.PERMUTE_INTERPOLATE}")
             print(f"    - Interpolation Match Mode: {config.MATCH_INTERPOLATE}")
             print(f"    - Interpolation Weight: {config.INTERPOLATE_WEIGHT}")
-            print(f"    - Global Model Interpolation Method: {'Weighted' if config.GLOBAL_MODEL_INTERPOLATE else 'E-dominant'}")
+            mode_label = {'E': 'E-dominant', 'C': 'C-dominant', 'interp': 'Weighted interpolation'}.get(config.GLOBAL_MODEL_SIZE_MODE, config.GLOBAL_MODEL_SIZE_MODE)
+            print(f"    - Global Model Size Mode: {mode_label}")
         print(f"  - Sinkhorn: {config.SINKHORN}")
         if config.SINKHORN:
             print(f"    - Sinkhorn Lambda: {config.SINKHORN_LAMBDA}")
@@ -237,10 +238,11 @@ def parse_args():
                         help='Second match mode to interpolate with')
     parser.add_argument('--interpolate-weight', type=float, default=None,
                         help='Weight for interpolation (0.0 to 1.0)')
-    parser.add_argument('--global-model-interpolate', action='store_true', default=None,
-                        help='Use weighted interpolation for global model size (True) or E-dominant rule (False)')
-    parser.add_argument('--no-global-model-interpolate', action='store_false', dest='global_model_interpolate',
-                        help='Use E-dominant rule for global model size')
+    parser.add_argument('--global-model-size-mode', type=str, default=None, choices=['E', 'C', 'interp'],
+                        help='Global model size rule when REARRANGE_INTERPOLATE=True: '
+                             'E=E-dominant (MAX_W if either is E), '
+                             'C=C-dominant (MIN_W if either is C), '
+                             'interp=weighted interpolation')
     
     # Model Interpolation parameters
     parser.add_argument('--client-interpolation', action='store_true', default=None,
@@ -338,8 +340,8 @@ def apply_args_to_config(args):
     if args.interpolate_weight is not None:
         config.INTERPOLATE_WEIGHT = args.interpolate_weight
     
-    if args.global_model_interpolate is not None:
-        config.GLOBAL_MODEL_INTERPOLATE = args.global_model_interpolate
+    if args.global_model_size_mode is not None:
+        config.GLOBAL_MODEL_SIZE_MODE = args.global_model_size_mode
     
     if args.interpolation is not None:
         config.INTERPOLATION = args.interpolation
@@ -375,12 +377,19 @@ def main():
         if config.REARRANGE_INTERPOLATE:
             def _match_to_w(match):
                 return config.MAX_W if match == 'E' else config.MIN_W
-            if config.GLOBAL_MODEL_INTERPOLATE:
-                # Method 2: weighted interpolation of global sizes
+            mode = config.GLOBAL_MODEL_SIZE_MODE
+            if mode == 'interp':
+                # Weighted interpolation of global sizes
                 w = config.INTERPOLATE_WEIGHT
                 global_w = _match_to_w(config.MATCH) * (1 - w) + _match_to_w(config.MATCH_INTERPOLATE) * w
-            else:
-                # Method 1: E-dominant — if either MATCH or MATCH_INTERPOLATE is 'E', use MAX_W
+            elif mode == 'C':
+                # C-dominant: if either is 'C', use MIN_W
+                if config.MATCH == 'C' or config.MATCH_INTERPOLATE == 'C':
+                    global_w = config.MIN_W
+                else:
+                    global_w = config.MAX_W
+            else:  # 'E' (default)
+                # E-dominant: if either is 'E', use MAX_W
                 if config.MATCH == 'E' or config.MATCH_INTERPOLATE == 'E':
                     global_w = config.MAX_W
                 else:

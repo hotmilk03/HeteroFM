@@ -130,10 +130,16 @@ def _compute_global_w():
         if config.REARRANGE_INTERPOLATE:
             def _match_to_w(match):
                 return config.MAX_W if match == 'E' else config.MIN_W
-            if config.GLOBAL_MODEL_INTERPOLATE:
+            mode = config.GLOBAL_MODEL_SIZE_MODE
+            if mode == 'interp':
                 w = config.INTERPOLATE_WEIGHT
                 return _match_to_w(config.MATCH) * (1 - w) + _match_to_w(config.MATCH_INTERPOLATE) * w
-            else:
+            elif mode == 'C':
+                if config.MATCH == 'C' or config.MATCH_INTERPOLATE == 'C':
+                    return config.MIN_W
+                else:
+                    return config.MAX_W
+            else:  # 'E' (default)
                 if config.MATCH == 'E' or config.MATCH_INTERPOLATE == 'E':
                     return config.MAX_W
                 else:

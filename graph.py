@@ -100,7 +100,7 @@ def plot_single_metric(file_paths, label_names, title, output_image, mode_type):
     else:
         plt.ylim(bottom=0)
 
-    plt.savefig(output_image)
+    plt.savefig(output_image, format='png', bbox_inches='tight')
     plt.clf()
 
 def parse_log_and_plot(file_paths, label_names, title, output_image):

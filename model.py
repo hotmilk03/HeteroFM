@@ -185,49 +185,6 @@ class Bottleneck(nn.Module):
         out += shortcut
         return out
 
-# class ResNet(nn.Module):
-#     def __init__(self, block, num_blocks, w, scaler_rate=1.0, track=False, in_channels=3, num_classes=1000):
-#         super(ResNet, self).__init__()
-        
-#         base_width = int(w * config.RESNET_BASE_WIDTH)
-#         base_width = max(1, base_width)
-
-#         self.in_planes = base_width
-#         self.scaler_rate = scaler_rate
-#         self.track = track
-
-#         self.conv1 = nn.Conv2d(in_channels, base_width, kernel_size=7, stride=2, padding=3, bias=False)
-#         self.bn1 = nn.BatchNorm2d(base_width, momentum=None, track_running_stats=self.track)
-#         self.relu = nn.ReLU(inplace=True)
-#         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
-#         self.layer1 = self._make_layer(block, base_width, num_blocks[0], stride=1)
-#         self.layer2 = self._make_layer(block, base_width*2, num_blocks[1], stride=2)
-#         self.layer3 = self._make_layer(block, base_width*4, num_blocks[2], stride=2)
-#         self.layer4 = self._make_layer(block, base_width*8, num_blocks[3], stride=2)
-#         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-#         self.linear = nn.Linear(base_width*8*block.expansion, num_classes)
-
-#     def _make_layer(self, block, planes, num_blocks, stride):
-#         strides = [stride] + [1] * (num_blocks - 1)
-#         layers = []
-#         for stride in strides:
-#             layers.append(block(self.in_planes, planes, stride, self.scaler_rate, self.track))
-#             self.in_planes = planes * block.expansion
-#         return nn.Sequential(*layers)
-
-#     def forward(self, x):
-#         out = self.relu(self.bn1(Scaler(self.scaler_rate)(self.conv1(x))))
-#         out = self.maxpool(out)
-#         out = self.layer1(out)
-#         out = self.layer2(out)
-#         out = self.layer3(out)
-#         out = self.layer4(out)
-#         out = self.avgpool(out)
-#         out = torch.flatten(out, 1)
-#         out = self.linear(out)
-#         return out
-
 class ResNet(nn.Module):
     def __init__(self, data_shape, hidden_size, block, num_blocks, num_classes, rate, track, use_imagenet_stem=False):
         super(ResNet, self).__init__()

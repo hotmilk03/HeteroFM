@@ -1,4 +1,5 @@
 import re
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from mpl_toolkits.mplot3d import Axes3D
@@ -78,30 +79,23 @@ def _create_animation(all_data_by_file, labels, title, ylabel, output_file, vlin
     # Use seaborn colorblind palette
     colors = sns.color_palette('colorblind', n_colors=len(all_data_by_file))
     
-    # Determine max number of rounds across all files
-    max_rounds = max(len(rounds) for rounds in all_data_by_file)
+    # Determine min number of rounds across all files (only plot up to the common minimum)
+    min_rounds = min(len(rounds) for rounds in all_data_by_file)
     
-    # Calculate global min/max for fixed axes across all rounds and files
+    # Calculate lambda range for fixed x-axis
     all_lambdas = []
-    all_values = []
     for rounds_data in all_data_by_file:
         for lambdas, data in rounds_data:
             all_lambdas.extend(lambdas)
-            all_values.extend(data)
     
     x_min, x_max = min(all_lambdas), max(all_lambdas)
     x_margin = 0  # No margin: fit exactly to lambda min/max
     
-    y_min, y_max = min(all_values), max(all_values)
-    y_margin = (y_max - y_min) * 0.05  # 5% margin
-    
     def animate(frame):
         ax.clear()
         ax.set_xlim(x_min - x_margin, x_max + x_margin)
-        # Fix y-range and ticks for loss plots only
-        if ylabel == 'Test Loss':
-            ax.set_ylim(0.5, 2.5)
-            ax.set_yticks([0.5, 1.0, 1.5, 2.0, 2.5])
+        # Fixed y-range: 0-3 for loss, 0-1 for accuracy
+        ax.set_ylim(0, 1 if ylabel == 'Accuracy' else 3)
         ax.set_xlabel('Lambda')
         ax.set_ylabel(ylabel)
         ax.set_title(f"{title} - Round {frame}")
@@ -111,7 +105,7 @@ def _create_animation(all_data_by_file, labels, title, ylabel, output_file, vlin
         for file_idx, rounds_data in enumerate(all_data_by_file):
             if frame < len(rounds_data):
                 lambdas, data = rounds_data[frame]
-            ax.plot(lambdas, data, linestyle='-', marker=None, label=labels[file_idx], linewidth=3, color=colors[file_idx])
+                ax.plot(lambdas, data, linestyle='-', marker=None, label=labels[file_idx], linewidth=3, color=colors[file_idx])
         # Draw vertical guidelines if provided
         if vlines:
             _draw_vlines(ax, vlines)
@@ -120,7 +114,7 @@ def _create_animation(all_data_by_file, labels, title, ylabel, output_file, vlin
     
     # Linger on the last frame by repeating it (pillow writer ignores repeat_delay)
     linger_frames = 3  # show last frame ~3x longer
-    frame_sequence = list(range(max_rounds)) + [max_rounds - 1] * (linger_frames - 1)
+    frame_sequence = list(range(min_rounds)) + [min_rounds - 1] * (linger_frames - 1)
 
     anim = animation.FuncAnimation(
         fig, animate, frames=frame_sequence, interval=1000, repeat=True
@@ -131,51 +125,74 @@ def _create_animation(all_data_by_file, labels, title, ylabel, output_file, vlin
 
 def _create_3d_plot(all_data_by_file, labels, title, ylabel, output_file):
     """
-    Create 3D plot where each file's rounds are displayed as lines in 3D space.
-    x-axis: Communication Round
-    y-axis: Lambda
+    Create 3D surface plot where each file's rounds are displayed as surfaces.
+    x-axis: Lambda
+    y-axis: Communication Round
     z-axis: Loss/Accuracy value
-    Transparency increases (becomes more opaque) with later rounds.
+    Uses high transparency so overlapping surfaces are visible.
     """
     fig = plt.figure(figsize=(14, 10))
     ax = fig.add_subplot(111, projection='3d')
     
-    # Assign one color per file (consistent across all rounds)
-    # Use simple colors: green, orange, blue, red, purple, brown, pink, gray
-    colors_list = ['green', 'orange', 'blue', 'red', 'purple', 'brown', 'pink', 'gray']
-    colors = {file_idx: colors_list[file_idx % len(colors_list)] for file_idx in range(len(all_data_by_file))}
+    # Get a vibrant color palette for different files (non-colorblind, bright and distinct)
+    colors_list = ['#FF0000', '#00FF00', '#0000FF', '#FFD700', '#FF00FF', '#00FFFF', '#FF6600', '#00FF99']
     
-    # Plot each file's data
+    # Plot each file's data as a surface
     for file_idx, (rounds_data, label) in enumerate(zip(all_data_by_file, labels)):
+        # Convert rounds_data into mesh grid format
+        # rounds_data[round_idx] = (lambdas, data)
+        # Create X (lambda), Y (round), Z (loss/acc) arrays
+        
         max_rounds = len(rounds_data)
+        
+        # Build X, Y, Z for this file
+        X_data = []
+        Y_data = []
+        Z_data = []
+        
         for round_idx, (lambdas, data) in enumerate(rounds_data):
-            # x-axis: round index
-            x = [round_idx] * len(lambdas)
-            # y-axis: lambda values
-            y = lambdas
-            # z-axis: loss/accuracy values
-            z = data
-            
-            # Transparency decreases with round progress (early rounds are more opaque)
-            alpha = 0.8 - 0.5 * (round_idx / max(1, max_rounds - 1))
-            
-            # Plot as a 3D line with round-based transparency
-            ax.plot(x, y, z, color=colors[file_idx], alpha=alpha, linewidth=3.5, 
-                   label=label if round_idx == 0 else '')
+            X_data.append(np.array(lambdas))
+            Y_data.append(np.array([round_idx] * len(lambdas)))
+            Z_data.append(np.array(data))
+        
+        # Create meshgrid
+        # Find unique lambdas and rounds for consistent grid
+        all_lambdas = np.unique(np.concatenate(X_data))
+        all_rounds = np.arange(max_rounds)
+        
+        X_mesh, Y_mesh = np.meshgrid(all_lambdas, all_rounds)
+        Z_mesh = np.zeros_like(X_mesh, dtype=float)
+        
+        # Fill Z_mesh with interpolated values
+        for round_idx, (lambdas, data) in enumerate(rounds_data):
+            # Use linear interpolation for missing lambda values
+            Z_interp = np.interp(all_lambdas, lambdas, data)
+            Z_mesh[round_idx, :] = Z_interp
+        
+        # Plot surface with higher transparency (lower alpha = more transparent) and assigned color
+        color = colors_list[file_idx % len(colors_list)]
+        ax.plot_surface(X_mesh, Y_mesh, Z_mesh, alpha=0.15, label=label, 
+                       shade=False, edgecolor='none', color=color)
     
-    ax.set_xlabel('Communication Round', fontsize=11)
-    ax.set_ylabel('Lambda', fontsize=11)
+    ax.set_xlabel('Lambda', fontsize=11)
+    ax.set_ylabel('Communication Round', fontsize=11)
     ax.set_zlabel(ylabel, fontsize=11)
+    ax.set_zlim(0, 1 if ylabel == 'Accuracy' else 3)  # Fixed z-range: 0-1 for acc, 0-3 for loss
     ax.set_title(title, fontsize=13)
-    ax.legend(loc='upper left', fontsize=10)
     ax.view_init(elev=20, azim=45)  # Set viewing angle
     
+    # Add legend (manual since plot_surface doesn't support it directly)
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor=colors_list[i % len(colors_list)], 
+                            label=labels[i]) for i in range(len(labels))]
+    ax.legend(handles=legend_elements, loc='upper left', fontsize=10)
+    
     # Convert .gif to _3D.pdf
-    output_file_3d = output_file.replace('.gif', '_3D.pdf')
+    output_file_3d = output_file.replace('.pdf', '_3D.pdf')
     
     plt.savefig(output_file_3d, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"3D plot saved: {output_file_3d}")
+    print(f"3D surface plot saved: {output_file_3d}")
 
 def parse_interpolation_and_plot(file_paths, label_names, title, output_image, vline_labels=None):
     mode = config.DRAW  # 'acc', 'loss', 'all'
@@ -257,15 +274,16 @@ def parse_interpolation_and_plot(file_paths, label_names, title, output_image, v
             plt.figure(figsize=(10, 6))
             # Use seaborn colorblind palette
             colors = sns.color_palette('colorblind', n_colors=len(all_rounds_data))
+            first_round_losses = []
             for idx, (rounds_data, label) in enumerate(zip(all_rounds_data, labels)):
                 # Use first round
                 if rounds_data:
                     lambdas, losses, _ = rounds_data[0]
+                    first_round_losses.extend(losses)
                     plt.plot(lambdas, losses, linestyle='-', marker=None, label=label, zorder=3, linewidth=3, color=colors[idx])
             if x_min is not None:
                 plt.xlim(x_min, x_max)
-                plt.ylim(0.5, 2.5)
-                plt.gca().set_yticks([0.5, 1.0, 1.5, 2.0, 2.5])
+                plt.ylim(0, 3)  # Fixed y-range: 0-3 for loss
                 if vlines:
                     _draw_vlines(plt.gca(), vlines)
             plt.title(f"{title} (Loss)")
@@ -274,20 +292,23 @@ def parse_interpolation_and_plot(file_paths, label_names, title, output_image, v
             plt.grid(True)
             plt.legend()
             out_loss = output_image if mode == 'loss' else _add_suffix(output_image, 'loss')
-            plt.savefig(out_loss, format='pdf', bbox_inches='tight')
+            plt.savefig(out_loss, bbox_inches='tight')
             plt.clf()
 
         if mode in ('acc', 'all'):
             plt.figure(figsize=(10, 6))
             # Use seaborn colorblind palette
             colors = sns.color_palette('colorblind', n_colors=len(all_rounds_data))
+            first_round_accs = []
             for idx, (rounds_data, label) in enumerate(zip(all_rounds_data, labels)):
                 # Use first round
                 if rounds_data:
                     lambdas, _, accs = rounds_data[0]
+                    first_round_accs.extend(accs)
                     plt.plot(lambdas, accs, linestyle='-', marker=None, label=label, zorder=3, linewidth=3, color=colors[idx])
             if x_min is not None:
                 plt.xlim(x_min, x_max)
+                plt.ylim(0, 1)  # Fixed y-range: 0-1 for accuracy
                 if vlines:
                     _draw_vlines(plt.gca(), vlines)
             plt.title(f"{title} (Accuracy)")
@@ -296,7 +317,7 @@ def parse_interpolation_and_plot(file_paths, label_names, title, output_image, v
             plt.grid(True)
             plt.legend()
             out_acc = output_image if mode == 'acc' else _add_suffix(output_image, 'acc')
-            plt.savefig(out_acc, format='pdf', bbox_inches='tight')
+            plt.savefig(out_acc, bbox_inches='tight')
             plt.clf()
 
 def _add_suffix(filename, suffix):
@@ -312,100 +333,55 @@ def _change_extension(filename, new_ext):
     return f"{filename}{new_ext}"
 
 if __name__ == '__main__':
-    # log_files = [
-    #     'results_interpolate/client_interpolate/smaller_hetero/exp_vgg11_ZC_1-8_interpolation.log',
-    #     'results_interpolate/client_interpolate/larger_hetero/exp_vgg11_ZC_1-8_interpolation.log',
-    # ]
-    # labels = [
-    #     'smaller hetero ZC',
-    #     'larger hetero ZC',
-    # ]
-    # output = 'results_interpolate/client_interpolate/larger_hetero/interpolation_vgg11_ZC_1-8_compare.pdf'
-    # title = 'VGG11 Interpolation by fixed model size (diff 1-8, ZC)'
-    # parse_interpolation_and_plot(log_files, labels, title, output)
+    log_files = [
+        # 'results_resnet/client_interpolate/classRatio0.01_diff/ln/exp_resnet50_0.01_default_2-1_interpolation_localEpoch40-ln.log',
+        # 'results_resnet/client_interpolate/classRatio0.01_diff/ln/exp_resnet50_0.01_ME_2-1_interpolation_localEpoch40-ln.log',
+        # 'results_resnet/client_interpolate/classRatio0.01_diff/ln/exp_resnet50_0.01_MC_2-1_interpolation_localEpoch40-ln.log',
+        # 'results_resnet/client_interpolate/classRatio0.01_diff/ln/exp_resnet50_0.01_ZE_2-1_interpolation_localEpoch40-ln.log',
+        # 'results_resnet/client_interpolate/classRatio0.01_diff/ln/exp_resnet50_0.01_ZC_2-1_interpolation_localEpoch40-ln.log',
 
-    n=1
-    while n <= 4:
-        log_files = [
-            f'results_seed_init/client_interpolate/exp_vgg11_default_1-{n}_interpolation.log',
-            f'results_seed_init/client_interpolate/exp_vgg11_ME_1-{n}_interpolation.log',
-            f'results_seed_init/client_interpolate/exp_vgg11_MC_1-{n}_interpolation.log',
-            f'results_seed_init/client_interpolate/exp_vgg11_ZE_1-{n}_interpolation.log',
-            f'results_seed_init/client_interpolate/exp_vgg11_ZC_1-{n}_interpolation.log',
-        ]
-        labels = [
-            'HeteroFL',
-            'ME',
-            'MC',
-            'ZE',
-            'ZC',
-        ]
-        output = f'results_seed_init/client_interpolate/interpolation_vgg11_1-{n}.pdf'
-        title = f'VGG11 Interpolation (diff 1/{n})'
-        if n == 1:
-            parse_interpolation_and_plot(log_files, labels, title, output, vline_labels=('VGG', 'VGG'))
-        else:
-            parse_interpolation_and_plot(log_files, labels, title, output, vline_labels=('VGG',f'VGG x1/{n}'))
+        # 'results_resnet/client_interpolate/classRatio0.01_similar/ln/exp_resnet50_0.01_default_4-5_interpolation_localEpoch40-ln.log',
+        # 'results_resnet/client_interpolate/classRatio0.01_similar/ln/exp_resnet50_0.01_ME_4-5_interpolation_localEpoch40-ln.log'
+        
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.0_1.0_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.1_0.9_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.2_0.8_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.3_0.7_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.4_0.6_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.5_0.5_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.6_0.4_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.7_0.3_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.8_0.2_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_0.9_0.1_2-1_permute_interpolation-ln.log',
+        # 'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/exp_resnet50_0.01_MC_ZE_1.0_0.0_2-1_permute_interpolation-ln.log',
+    ]
+    labels = [
+        # 'default(gn, noPerm)',
+        # 'gn',
+        # 'bn',
+        # 'ln',
+        # 'in'
+        
+        # 'HeteroFL',
+        # 'ME',
+        # 'MC',
+        # 'ZE',
+        # 'ZC',
 
-        if n != 1:
-            log_files = [
-                f'results_seed_init/client_interpolate/exp_vgg11_default_{n}-1_interpolation.log',
-                f'results_seed_init/client_interpolate/exp_vgg11_ME_{n}-1_interpolation.log',
-                f'results_seed_init/client_interpolate/exp_vgg11_MC_{n}-1_interpolation.log',
-                f'results_seed_init/client_interpolate/exp_vgg11_ZE_{n}-1_interpolation.log',
-                f'results_seed_init/client_interpolate/exp_vgg11_ZC_{n}-1_interpolation.log',
-            ]
-            labels = [
-                'HeteroFL',
-                'ME',
-                'MC',
-                'ZE',
-                'ZC',
-            ]
-            output = f'results_seed_init/client_interpolate/interpolation_vgg11_{n}-1.pdf'
-            title = f'VGG11 Interpolation (diff {n}-1)'
-            parse_interpolation_and_plot(log_files, labels, title, output, vline_labels=('VGG',f'VGG x{n}'))
-            
-        n *= 2
+        # 'MC:ZE=0:10',
+        # 'MC:ZE=1:9',
+        # 'MC:ZE=2:8',
+        # 'MC:ZE=3:7',
+        # 'MC:ZE=4:6',
+        # 'MC:ZE=5:5',
+        # 'MC:ZE=6:4',
+        # 'MC:ZE=7:3',
+        # 'MC:ZE=8:2',
+        # 'MC:ZE=9:1',
+        # 'MC:ZE=10:0',
+    ]
+    
+    output = f'results_resnet/permute_interpolate/classRatio0.01_diffGlobalSize_by_theta/ln/lr0.01/permute_interpolation_resnet50_0.01_2-1_MC_ZE_localEpoch40_interp_lr0.01-ln.gif'
+    title = 'ResNet50 Permute Interpolate (norm LN, diff 2-1, globalSizeMode interp, localEpoch=40, 1% dataset, lr 0.01)'
 
-    # n=1
-    # while n <= 32:
-    #     log_files = [
-    #         f'results_jan_week4/exp11_vgg11_default_1-{n}_interpolation.log',
-    #         f'results_jan_week4/exp11_vgg11_ME_1-{n}_interpolation.log',
-    #         f'results_jan_week4/exp11_vgg11_MC_1-{n}_interpolation.log',
-    #         f'results_jan_week4/exp11_vgg11_ZE_1-{n}_interpolation.log',
-    #         f'results_jan_week4/exp11_vgg11_ZC_1-{n}_interpolation.log',
-    #     ]
-    #     labels = [
-    #         'HeteroFL',
-    #         'ME',
-    #         'MC',
-    #         'ZE',
-    #         'ZC',
-    #     ]
-    #     output = f'results_jan_week4/interpolation_vgg11_1-{n}.pdf'
-    #     title = f'VGG11 Interpolation (diff 1/{n})'
-    #     parse_interpolation_and_plot(log_files, labels, title, output)
-    #     n *= 2
-
-    # for type in ['default', 'ME', 'MC', 'ZE', 'ZC']:
-    #     log_files = [
-    #         f'results_jan_week4/exp11_vgg11_{type}_1-1_interpolation.log',
-    #         f'results_jan_week4/exp11_vgg11_{type}_1-2_interpolation.log',
-    #         f'results_jan_week4/exp11_vgg11_{type}_1-4_interpolation.log',
-    #         f'results_jan_week4/exp11_vgg11_{type}_1-8_interpolation.log',
-    #         f'results_jan_week4/exp11_vgg11_{type}_1-16_interpolation.log',
-    #         f'results_jan_week4/exp11_vgg11_{type}_1-32_interpolation.log',
-    #     ]
-    #     labels = [
-    #         'diff 1-1',
-    #         'diff 1-2',
-    #         'diff 1-4',
-    #         'diff 1-8',
-    #         'diff 1-16',
-    #         'diff 1-32',
-    #     ]
-    #     output = f'results_jan_week4/interpolation_vgg11_{type}.pdf'
-    #     title = f'VGG11 Interpolation ({type})'
-    #     parse_interpolation_and_plot(log_files, labels, title, output)
+    parse_interpolation_and_plot(log_files, labels, title, output)
